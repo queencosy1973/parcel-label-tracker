@@ -1042,11 +1042,11 @@
           💡 <strong>การทำงาน:</strong> ระบบจะดึง <strong>"ประวัติการยิง QR"</strong> จาก <code>daily-parcel-checker</code> มาเช็คคู่กับไฟล์คำสั่งซื้อที่คุณอัปโหลดในหน้านี้โดยอัตโนมัติ (หรือกดปุ่มดึงรายการคำสั่งซื้อจากระบบยิง QR ด้านล่างก็ได้ครับ)
         </div>
 
-        <label class="block border-2 border-dashed border-indigo-300 hover:border-indigo-600 rounded-2xl p-6 text-center bg-slate-50 cursor-pointer transition">
+        <label id="import-orders-dropzone" class="block border-2 border-dashed border-indigo-300 hover:border-indigo-600 rounded-2xl p-6 text-center bg-slate-50 cursor-pointer transition">
           <i data-lucide="file-spreadsheet" class="w-8 h-8 text-indigo-600 mx-auto mb-2"></i>
-          <div class="text-sm font-bold text-slate-800">คลิกเลือกไฟล์ Excel / CSV คำสั่งซื้อ (.xlsx, .xls, .csv)</div>
-          <div class="text-xs text-slate-500 mt-1">รองรับไฟล์ส่งออกจาก Shopee, TikTok Shop, Lazada หรือไฟล์สรุปออเดอร์ของร้าน</div>
-          <input type="file" id="input-import-orders-file" accept=".xlsx,.xls,.csv" class="hidden" />
+          <div class="text-sm font-bold text-slate-800">คลิกเลือก หรือลากวางไฟล์ Excel / CSV คำสั่งซื้อ (เลือกพร้อมกันหลายไฟล์ได้)</div>
+          <div class="text-xs text-slate-500 mt-1">รองรับไฟล์จาก Shopee, TikTok Shop, Lazada หรือไฟล์รวมหลายชีต (อ่านครบทุก Sheet อัตโนมัติ)</div>
+          <input type="file" id="input-import-orders-file" accept=".xlsx,.xls,.csv" multiple class="hidden" />
         </label>
 
         <div class="pt-1 flex items-center justify-between gap-2 border-t border-slate-100">
