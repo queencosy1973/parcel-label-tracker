@@ -38,6 +38,13 @@
     followUpMultiDayData: [], // Array of daily data objects
     followUpSelectedKeys: new Set(),
 
+    // Tab 4 Global Return & Failed Delivery Re-Check State
+    returnRecords: [],
+    globalOrderIndex: { byTracking: new Map(), byOrderId: new Map(), totalUploadedOrders: 0, totalUploadedUnits: 0 },
+    reconciledReturns: { items: [], summary: {} },
+    returnFilter: 'ALL',
+    returnSearch: '',
+
     // Cloud Config
     config: TrackerDB.getLocalConfig(),
     supabaseClient: null
@@ -116,7 +123,8 @@
             if (
               bid.startsWith('QC_LABEL_SCAN_') ||
               bid.startsWith('QC_LABEL_ORDERS_') ||
-              bid.startsWith('QC_PARCEL_DATA_')
+              bid.startsWith('QC_PARCEL_DATA_') ||
+              bid === 'QC_LABEL_RETURNS_ALL'
             ) {
               refreshActiveDateData(false);
             }
@@ -131,13 +139,26 @@
   async function refreshActiveDateData(showNotification = false) {
     updateSyncBadge('syncing');
     try {
-      const daily = await TrackerDB.syncDailyDataFromCloud(state.activeDate);
+      const [daily, returnRecords, globalOrderIndex] = await Promise.all([
+        TrackerDB.syncDailyDataFromCloud(state.activeDate),
+        TrackerDB.fetchGlobalReturnsFromCloud(),
+        TrackerDB.fetchAllUploadedOrdersIndexFromCloud()
+      ]);
       state.qrSystemOrders = daily.qrSystemOrders;
       state.extraOrders = daily.extraOrders;
       state.orders = daily.orders;
       state.qrScans = daily.qrScans;
       state.labelScans = daily.labelScans;
       state.reconciled = daily.reconciled;
+
+      state.returnRecords = returnRecords;
+      state.globalOrderIndex = globalOrderIndex;
+      state.reconciledReturns = TrackerDB.reconcileGlobalReturns(
+        state.returnRecords,
+        state.globalOrderIndex,
+        state.orders,
+        state.labelScans
+      );
 
       if (state.activeTab === 'tab-followup') {
         await loadFollowUpRangeData();
@@ -147,7 +168,7 @@
       updateSyncBadge('synced');
       if (showNotification) {
         const s = state.reconciled.summary;
-        showToast(`ซิงค์สำเร็จ! ออเดอร์ ${s.totalOrders} | ยิง QR ${s.qrScannedCount} | รูปลาเบล ${s.labelPhotoCount} | ครบ 3 ทาง ${s.verifiedAllCount}`);
+        showToast(`ซิงค์สำเร็จ! ออเดอร์ ${s.totalOrders} | ยิง QR ${s.qrScannedCount} | รูปลาเบล ${s.labelPhotoCount} | ตีกลับ/ส่งไม่สำเร็จ ${state.returnRecords.length}`);
       }
     } catch (err) {
       console.warn('refreshActiveDateData error:', err);
@@ -163,6 +184,12 @@
       state.qrScans,
       state.labelScans,
       state.activeDate
+    );
+    state.reconciledReturns = TrackerDB.reconcileGlobalReturns(
+      state.returnRecords,
+      state.globalOrderIndex,
+      state.orders,
+      state.labelScans
     );
   }
 
@@ -273,7 +300,10 @@
     // Tab 3 Follow-Up Monitor Controls
     setupTab3FollowUpControls();
 
-    // Tab 4 Settings Controls
+    // Tab 4 Global Return & Failed Delivery Controls
+    setupTab4ReturnsControls();
+
+    // Tab 5 Settings Controls
     setupTab4SettingsControls();
 
     // Photo Viewer Modal Close
@@ -289,7 +319,7 @@
       else btn.classList.remove('active');
     });
 
-    ['tab-dashboard', 'tab-ai-queue', 'tab-followup', 'tab-settings'].forEach((id) => {
+    ['tab-dashboard', 'tab-ai-queue', 'tab-followup', 'tab-returns', 'tab-settings'].forEach((id) => {
       const el = $(id);
       if (!el) return;
       if (id === tabId) el.classList.remove('hidden');
@@ -315,6 +345,7 @@
     if ($('tab-badge-recheck')) $('tab-badge-recheck').textContent = (s.totalItems || 0).toLocaleString();
     if ($('tab-badge-photos')) $('tab-badge-photos').textContent = (state.labelScans.length || 0).toLocaleString();
     if ($('tab-badge-followup')) $('tab-badge-followup').textContent = (s.totalItems || 0).toLocaleString();
+    if ($('tab-badge-returns')) $('tab-badge-returns').textContent = (state.returnRecords.length || 0).toLocaleString();
 
     renderDashboardKPIs();
     updateDashboardCarrierDropdown();
@@ -323,6 +354,7 @@
     if (state.activeTab === 'tab-followup') {
       renderFollowUpTab();
     }
+    renderReturnsTab();
     if (typeof lucide !== 'undefined') lucide.createIcons();
   }
 
@@ -1492,6 +1524,19 @@
           modal?.classList.add('hidden');
           await refreshActiveDateData(false);
           showToast('🗑️ ลบรายการพัสดุที่เลือกเรียบร้อยแล้ว!');
+        } else if (pendingDeleteContext.mode === 'CLEAR_ALL_RETURNS') {
+          await TrackerDB.clearGlobalReturnsFromCloud();
+          state.returnRecords = [];
+          modal?.classList.add('hidden');
+          await refreshActiveDateData(false);
+          showToast('🗑️ ล้างรายการพัสดุตีกลับและส่งไม่สำเร็จทั้งหมดเรียบร้อยแล้ว!');
+        } else if (pendingDeleteContext.mode === 'SINGLE_RETURN_ITEM') {
+          const p = pendingDeleteContext.payload || {};
+          state.returnRecords = state.returnRecords.filter((r) => r.id !== p.id);
+          await TrackerDB.saveGlobalReturnsToCloud(state.returnRecords, state.config.staffName);
+          modal?.classList.add('hidden');
+          await refreshActiveDateData(false);
+          showToast('🗑️ ลบรายการพัสดุตีกลับที่เลือกเรียบร้อยแล้ว!');
         }
       } catch (err) {
         alert('เกิดข้อผิดพลาดในการลบข้อมูล: ' + err.message);
@@ -1527,6 +1572,19 @@
       }
       if ($('chk-del-orders')) $('chk-del-orders').checked = true;
       if ($('chk-del-photos')) $('chk-del-photos').checked = false;
+    } else if (mode === 'CLEAR_ALL_RETURNS') {
+      if (titleEl) titleEl.textContent = 'ยืนยันการล้างข้อมูลพัสดุตีกลับทั้งหมด (เฉพาะแอดมิน)';
+      if (descEl) {
+        descEl.textContent = `ต้องการล้างรายการพัสดุตีกลับและส่งไม่สำเร็จทั้งหมด (${state.returnRecords.length.toLocaleString()} รายการ) ออกจากระบบใช่หรือไม่? (ไม่กระทบคำสั่งซื้อและการยิง QR)`;
+      }
+      if (bulkBox) bulkBox.classList.add('hidden');
+    } else if (mode === 'SINGLE_RETURN_ITEM') {
+      if (titleEl) titleEl.textContent = 'ยืนยันการลบรายการพัสดุตีกลับ (เฉพาะแอดมิน)';
+      const labelTxt = payload?.trackingId || payload?.orderId || payload?.id || '';
+      if (descEl) {
+        descEl.textContent = `ต้องการลบรายการตีกลับ/ส่งไม่สำเร็จ "${labelTxt}" ออกจากทะเบียนตีกลับใช่หรือไม่?`;
+      }
+      if (bulkBox) bulkBox.classList.add('hidden');
     } else {
       if (titleEl) titleEl.textContent = 'ยืนยันการลบรายการพัสดุ (เฉพาะแอดมิน)';
       const labelTxt = payload?.cleanTracking || payload?.cleanOrderId || payload?.scanId || '';
@@ -1538,6 +1596,449 @@
 
     modal?.classList.remove('hidden');
     setTimeout(() => pwdInput?.focus(), 80);
+  }
+
+  // ===========================================================================
+  // 8. TAB 4: GLOBAL RETURN & FAILED DELIVERY RE-CHECK (CROSS-DATE MATCHER)
+  // ===========================================================================
+
+  function setupTab4ReturnsControls() {
+    const dropzone = $('return-dropzone');
+    const fileInput = $('input-return-files');
+    const camInput = $('input-return-camera');
+
+    if (dropzone && fileInput) {
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dropzone-active');
+      });
+      dropzone.addEventListener('dragleave', () => {
+        dropzone.classList.remove('dropzone-active');
+      });
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dropzone-active');
+        if (e.dataTransfer?.files?.length) {
+          processUploadedReturnFiles(Array.from(e.dataTransfer.files));
+        }
+      });
+    }
+
+    fileInput?.addEventListener('change', (e) => {
+      if (e.target.files?.length) {
+        processUploadedReturnFiles(Array.from(e.target.files));
+        e.target.value = '';
+      }
+    });
+
+    camInput?.addEventListener('change', (e) => {
+      if (e.target.files?.length) {
+        processUploadedReturnFiles(Array.from(e.target.files));
+        e.target.value = '';
+      }
+    });
+
+    // Quick Barcode / Manual Entry
+    $('btn-add-quick-return')?.addEventListener('click', handleQuickAddReturns);
+
+    // Filter Pills
+    document.querySelectorAll('#return-filter-pills .rfilter-pill').forEach((pill) => {
+      pill.addEventListener('click', () => {
+        state.returnFilter = pill.dataset.rfilter || 'ALL';
+        document.querySelectorAll('#return-filter-pills .rfilter-pill').forEach((p) => {
+          p.classList.remove('active', 'bg-slate-900', 'text-white');
+        });
+        pill.classList.add('active', 'bg-slate-900', 'text-white');
+        renderReturnsTab();
+      });
+    });
+
+    // Search
+    $('input-return-search')?.addEventListener('input', (e) => {
+      state.returnSearch = (e.target.value || '').trim();
+      renderReturnsTab();
+    });
+
+    // Sample Return Data
+    $('btn-load-sample-returns')?.addEventListener('click', async () => {
+      if (state.extraOrders.length === 0) {
+        await handleLoadSampleData();
+      }
+      const sampleRets = TrackerDB.getSampleReturnDataset(state.activeDate);
+      state.returnRecords = TrackerDB.deduplicateReturnRecords([...state.returnRecords, ...sampleRets]);
+      await TrackerDB.saveGlobalReturnsToCloud(state.returnRecords, state.config.staffName);
+      await refreshActiveDateData(false);
+      showToast('🧪 โหลดตัวอย่างพัสดุตีกลับและจับคู่กับคำสั่งซื้ออัตโนมัติเรียบร้อย!');
+    });
+
+    // Export Excel
+    $('btn-export-returns-excel')?.addEventListener('click', exportReturnsReportExcel);
+
+    // Admin Clear All Returns
+    $('btn-clear-returns-admin')?.addEventListener('click', () => {
+      openAdminDeleteModal('CLEAR_ALL_RETURNS', null);
+    });
+  }
+
+  async function processUploadedReturnFiles(files) {
+    if (!Array.isArray(files) || files.length === 0) return;
+
+    const progressBox = $('return-upload-progress');
+    const statusTxt = $('return-upload-status-text');
+    progressBox?.classList.remove('hidden');
+
+    const staff = ($('input-staff-name')?.value || state.config.staffName || 'ฝ่ายติดตามพัสดุ').trim();
+    const newRecords = [];
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const fname = (file.name || '').toLowerCase();
+        if (statusTxt) {
+          statusTxt.textContent = `กำลังอ่านไฟล์ (${i + 1}/${files.length}): ${file.name} และวิ่งค้นหาคำสั่งซื้อย้อนหลัง...`;
+        }
+
+        if (fname.endsWith('.xlsx') || fname.endsWith('.xls') || fname.endsWith('.csv')) {
+          const buf = await file.arrayBuffer();
+          const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+          const parsed = TrackerDB.parseReturnFileRows(rows);
+          newRecords.push(...parsed);
+        } else if (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(fname)) {
+          const dataUrl = await compressImageToDataUrl(file, 1280, 0.82);
+          const aiData = await TrackerDB.scanLabelImageWithGemini(
+            dataUrl,
+            state.config.geminiApiKey,
+            state.config.geminiModel
+          );
+          const cleanTrk = TrackerDB.normalizeTracking(aiData.trackingId || '');
+          const cleanOrd = TrackerDB.normalizeOrderId(aiData.orderId || '');
+          if (cleanTrk || cleanOrd) {
+            newRecords.push({
+              id: `RET-IMG-${Date.now()}-${i}`,
+              trackingId: cleanTrk,
+              cleanTracking: cleanTrk,
+              orderId: aiData.orderId || cleanOrd,
+              cleanOrderId: cleanOrd,
+              returnType: 'RETURNED',
+              warehouseStatus: 'RECEIVED_AT_WAREHOUSE',
+              reason: aiData.notes || 'สแกนจากรูปถ่ายใบปะหน้าพัสดุตีกลับ',
+              reportedDate: TrackerDB.getTodayString(),
+              carrier: aiData.carrier || '',
+              platform: aiData.platform || '',
+              sku: aiData.sku || aiData.productName || '',
+              qty: aiData.qty || 1,
+              customerName: aiData.customerName || '',
+              province: aiData.province || '',
+              updatedBy: staff
+            });
+          }
+        }
+      }
+
+      if (newRecords.length === 0) {
+        alert('ไม่พบหมายเลขพัสดุ (Tracking ID) หรือหมายเลขคำสั่งซื้อ (Order ID) ในไฟล์ที่วาง กรุณาตรวจสอบไฟล์');
+        return;
+      }
+
+      state.returnRecords = TrackerDB.deduplicateReturnRecords([...state.returnRecords, ...newRecords]);
+      await TrackerDB.saveGlobalReturnsToCloud(state.returnRecords, staff);
+      await refreshActiveDateData(false);
+
+      const s = state.reconciledReturns.summary || {};
+      showToast(`✅ นำเข้าพัสดุตีกลับ/ส่งไม่สำเร็จ ${newRecords.length} รายการ (จับคู่เจอออเดอร์เดิม ${s.matchedOrderCount || 0} รายการ)!`);
+    } catch (err) {
+      alert('เกิดข้อผิดพลาดในการประมวลผลไฟล์ตีกลับ: ' + err.message);
+    } finally {
+      progressBox?.classList.add('hidden');
+    }
+  }
+
+  async function handleQuickAddReturns() {
+    const rawText = ($('input-quick-return-codes')?.value || '').trim();
+    if (!rawText) {
+      alert('กรุณายิงบาร์โค้ด หรือวางหมายเลขพัสดุ (Tracking ID) / หมายเลขคำสั่งซื้อ (Order ID) อย่างน้อย 1 รายการ');
+      return;
+    }
+
+    const returnType = $('select-quick-return-type')?.value || 'RETURNED';
+    const warehouseStatus = $('select-quick-warehouse-status')?.value || 'IN_RETURN_TRANSIT';
+    const reason = ($('input-quick-return-reason')?.value || '').trim() ||
+      (returnType === 'RETURNED' ? 'พัสดุตีกลับจากขนส่ง' : 'ขนส่งนำจ่ายไม่สำเร็จ / รอติดตามลูกค้า');
+    const staff = ($('input-staff-name')?.value || state.config.staffName || 'ฝ่ายติดตามพัสดุ').trim();
+
+    const lines = rawText
+      .split(/[\r\n,;]+/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const added = [];
+    lines.forEach((line, idx) => {
+      const clean = line.toUpperCase().replace(/\s+/g, '');
+      const isOrderLike = /^(\d{14,20}|\d{6}[A-Z0-9]{8})$/.test(clean) && !/^(66\d{12}|82\d{10})$/.test(clean);
+      added.push({
+        id: `RET-Q-${Date.now()}-${idx}`,
+        trackingId: isOrderLike ? '' : clean,
+        cleanTracking: isOrderLike ? '' : TrackerDB.normalizeTracking(clean),
+        orderId: isOrderLike ? clean : '',
+        cleanOrderId: isOrderLike ? TrackerDB.normalizeOrderId(clean) : '',
+        returnType,
+        warehouseStatus,
+        reason,
+        reportedDate: TrackerDB.getTodayString(),
+        updatedBy: staff
+      });
+    });
+
+    if (added.length === 0) return;
+
+    state.returnRecords = TrackerDB.deduplicateReturnRecords([...state.returnRecords, ...added]);
+    if ($('input-quick-return-codes')) $('input-quick-return-codes').value = '';
+    if ($('input-quick-return-reason')) $('input-quick-return-reason').value = '';
+
+    await TrackerDB.saveGlobalReturnsToCloud(state.returnRecords, staff);
+    await refreshActiveDateData(false);
+    showToast(`✅ บันทึกและจับคู่พัสดุตีกลับ/ส่งไม่สำเร็จ ${added.length} รายการเรียบร้อย!`);
+  }
+
+  function renderReturnsTab() {
+    const tbody = $('returns-table-body');
+    if (!tbody) return;
+
+    const rec = state.reconciledReturns || { items: [], summary: {} };
+    const s = rec.summary || {
+      totalUploadedOrders: 0,
+      totalUploadedUnits: 0,
+      totalReturnAndFailed: 0,
+      returnRatePct: 0,
+      returnedCount: 0,
+      failedDeliveryCount: 0,
+      inReturnTransitCount: 0,
+      receivedWarehouseCount: 0,
+      matchedOrderCount: 0,
+      unmatchedOrderCount: 0
+    };
+
+    if ($('ret-kpi-total-orders')) $('ret-kpi-total-orders').textContent = (s.totalUploadedOrders || 0).toLocaleString();
+    if ($('ret-kpi-total-units')) $('ret-kpi-total-units').textContent = `รวมสินค้าทั้งหมด ${(s.totalUploadedUnits || 0).toLocaleString()} ชิ้น`;
+    if ($('ret-kpi-total-issues')) $('ret-kpi-total-issues').textContent = (s.totalReturnAndFailed || 0).toLocaleString();
+    if ($('ret-kpi-rate-pct')) $('ret-kpi-rate-pct').textContent = `(${s.returnRatePct || 0}% ของคำสั่งซื้อทั้งหมด)`;
+    if ($('ret-kpi-match-breakdown')) {
+      $('ret-kpi-match-breakdown').textContent = `จับคู่เจอออเดอร์เดิม: ${s.matchedOrderCount || 0} • ไม่พบในออเดอร์: ${s.unmatchedOrderCount || 0}`;
+    }
+    if ($('ret-kpi-failed-count')) $('ret-kpi-failed-count').textContent = (s.failedDeliveryCount || 0).toLocaleString();
+    if ($('ret-kpi-returned-count')) $('ret-kpi-returned-count').textContent = (s.returnedCount || 0).toLocaleString();
+    if ($('ret-kpi-warehouse-breakdown')) {
+      $('ret-kpi-warehouse-breakdown').textContent = `กำลังตีกลับกลางทาง: ${s.inReturnTransitCount || 0} • รับคืนเข้าโกดังแล้ว: ${s.receivedWarehouseCount || 0}`;
+    }
+
+    if ($('rcnt-all')) $('rcnt-all').textContent = s.totalReturnAndFailed || 0;
+    if ($('rcnt-returned')) $('rcnt-returned').textContent = s.returnedCount || 0;
+    if ($('rcnt-failed')) $('rcnt-failed').textContent = s.failedDeliveryCount || 0;
+    if ($('rcnt-transit')) $('rcnt-transit').textContent = s.inReturnTransitCount || 0;
+    if ($('rcnt-received')) $('rcnt-received').textContent = s.receivedWarehouseCount || 0;
+    if ($('rcnt-unmatched')) $('rcnt-unmatched').textContent = s.unmatchedOrderCount || 0;
+
+    let list = [...(rec.items || [])];
+    if (state.returnFilter === 'RETURNED') {
+      list = list.filter((x) => x.returnType === 'RETURNED');
+    } else if (state.returnFilter === 'FAILED_DELIVERY') {
+      list = list.filter((x) => x.returnType === 'FAILED_DELIVERY');
+    } else if (state.returnFilter === 'IN_RETURN_TRANSIT') {
+      list = list.filter((x) => x.warehouseStatus === 'IN_RETURN_TRANSIT');
+    } else if (state.returnFilter === 'RECEIVED_AT_WAREHOUSE') {
+      list = list.filter((x) => x.warehouseStatus === 'RECEIVED_AT_WAREHOUSE');
+    } else if (state.returnFilter === 'UNMATCHED') {
+      list = list.filter((x) => !x.isMatchedOrder);
+    }
+
+    if (state.returnSearch) {
+      const q = state.returnSearch.toLowerCase();
+      list = list.filter((x) =>
+        (x.trackingId && x.trackingId.toLowerCase().includes(q)) ||
+        (x.orderId && x.orderId.toLowerCase().includes(q)) ||
+        (x.sku && x.sku.toLowerCase().includes(q)) ||
+        (x.customerName && x.customerName.toLowerCase().includes(q)) ||
+        (x.province && x.province.toLowerCase().includes(q)) ||
+        (x.reason && x.reason.toLowerCase().includes(q))
+      );
+    }
+
+    if (list.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="9" class="py-14 text-center text-slate-400">
+            <i data-lucide="package-x" class="w-10 h-10 mx-auto mb-2 text-slate-300"></i>
+            <div class="font-bold text-sm text-slate-600">ยังไม่มีรายการพัสดุตีกลับหรือส่งไม่สำเร็จในตัวกรองนี้</div>
+            <div class="text-xs text-slate-400 mt-1">ลากวางไฟล์ Excel/CSV รายงานตีกลับ หรือรูปถ่ายใบปะหน้าของตีกลับด้านบน เพื่อให้ระบบวิ่งจับคู่คำสั่งซื้อย้อนหลังทุกวันอัตโนมัติ</div>
+          </td>
+        </tr>
+      `;
+      if (typeof lucide !== 'undefined') lucide.createIcons();
+      return;
+    }
+
+    let html = '';
+    list.forEach((item, idx) => {
+      const carrierUrl = TrackerDB.getCarrierTrackingUrl(item.carrier, item.trackingId);
+      const matchBadge = item.isMatchedOrder
+        ? `<span class="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-[10px] font-bold">✅ พบในคำสั่งซื้อเดิม</span>`
+        : `<span class="px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 text-[10px] font-bold">❓ ไม่พบในคำสั่งซื้อที่อัปโหลด</span>`;
+
+      const shipDateText = item.shipDate
+        ? `<div class="font-bold text-slate-900">${escapeHtml(TrackerDB.formatThaiDateDisplay(item.shipDate))}</div>
+           <div class="text-[10px] text-slate-500">(${escapeHtml(item.shipDate)} • ผ่านมา ${item.daysElapsed} วัน)</div>`
+        : `<div class="text-slate-400 text-[11px]">ไม่ระบุวันส่งออก</div>`;
+
+      html += `
+        <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+          <td class="py-3 px-3 text-center font-mono text-slate-400">${idx + 1}</td>
+          <td class="py-3 px-3.5 space-y-1">
+            ${shipDateText}
+            <div>${matchBadge}</div>
+          </td>
+          <td class="py-3 px-3.5">
+            <div class="font-mono font-bold text-slate-900 text-xs sm:text-sm">${escapeHtml(item.trackingId || '-')}</div>
+            <div class="flex flex-wrap items-center gap-1.5 mt-1">
+              <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-semibold">${escapeHtml(item.carrier)}</span>
+              <span class="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-semibold">${escapeHtml(item.platform)}</span>
+              ${
+                item.trackingId
+                  ? `<a href="${escapeHtml(carrierUrl)}" target="_blank" rel="noopener" class="px-1.5 py-0.5 rounded bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 text-[10px] font-bold">เช็คเว็บขนส่ง ↗</a>`
+                  : ''
+              }
+            </div>
+          </td>
+          <td class="py-3 px-3.5">
+            <div class="font-mono font-semibold text-slate-800">${escapeHtml(item.orderId || '-')}</div>
+            <div class="text-[11px] text-slate-500 mt-0.5">
+              ${escapeHtml([item.customerName, item.province ? `จ.${item.province}` : ''].filter(Boolean).join(' • ') || 'ไม่ระบุชื่อผู้รับ')}
+            </div>
+          </td>
+          <td class="py-3 px-3.5 font-semibold text-slate-800 max-w-[240px]">
+            <div class="truncate" title="${escapeHtml(item.sku)}">${escapeHtml(item.sku || '-')}</div>
+          </td>
+          <td class="py-3 px-3 text-center font-mono font-bold text-slate-900">${item.qty || 1}</td>
+          <td class="py-3 px-3.5 space-y-1.5 min-w-[210px]">
+            <select data-ret-id="${escapeHtml(item.id)}" class="ret-type-select w-full px-2 py-1 rounded-lg border border-slate-300 text-xs font-bold bg-white">
+              <option value="RETURNED" ${item.returnType === 'RETURNED' ? 'selected' : ''}>↩️ ตีกลับ (Returned)</option>
+              <option value="FAILED_DELIVERY" ${item.returnType === 'FAILED_DELIVERY' ? 'selected' : ''}>⚠️ ส่งไม่สำเร็จ / รอตาม</option>
+            </select>
+            <input type="text" data-ret-reason-id="${escapeHtml(item.id)}" value="${escapeHtml(item.reason || '')}" placeholder="ระบุสาเหตุที่ตีกลับ/ส่งไม่สำเร็จ..." class="ret-reason-input w-full px-2 py-1 rounded-lg border border-slate-200 text-[11px]" />
+          </td>
+          <td class="py-3 px-3.5 min-w-[185px]">
+            <select data-ret-wh-id="${escapeHtml(item.id)}" class="ret-wh-select w-full px-2 py-1.5 rounded-lg border border-slate-300 text-xs font-bold bg-white">
+              <option value="IN_RETURN_TRANSIT" ${item.warehouseStatus === 'IN_RETURN_TRANSIT' ? 'selected' : ''}>🚚 กำลังตีกลับ / ยังไม่ถึงโกดัง</option>
+              <option value="RECEIVED_AT_WAREHOUSE" ${item.warehouseStatus === 'RECEIVED_AT_WAREHOUSE' ? 'selected' : ''}>✅ รับของคืนเข้าโกดังแล้ว</option>
+              <option value="RESOLVED_DELIVERED" ${item.warehouseStatus === 'RESOLVED_DELIVERED' ? 'selected' : ''}>🎉 แก้ไขสำเร็จ (ลูกค้ารับแล้ว)</option>
+            </select>
+          </td>
+          <td class="py-3 px-3 text-center">
+            <div class="flex items-center justify-center gap-1.5">
+              <button data-save-ret="${escapeHtml(item.id)}" class="btn-save-ret-row px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold cursor-pointer transition">
+                บันทึก
+              </button>
+              <button data-del-ret="${escapeHtml(item.id)}" data-del-ret-trk="${escapeHtml(item.trackingId || item.orderId)}" title="ลบรายการนี้ (รหัสแอดมิน)" class="btn-del-ret-row p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 cursor-pointer transition">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = html;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    tbody.querySelectorAll('.btn-save-ret-row').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const retId = btn.dataset.saveRet;
+        const typeEl = tbody.querySelector(`.ret-type-select[data-ret-id="${retId}"]`);
+        const reasonEl = tbody.querySelector(`.ret-reason-input[data-ret-reason-id="${retId}"]`);
+        const whEl = tbody.querySelector(`.ret-wh-select[data-ret-wh-id="${retId}"]`);
+
+        const idx = state.returnRecords.findIndex((r) => r.id === retId);
+        if (idx === -1) return;
+
+        state.returnRecords[idx] = Object.assign({}, state.returnRecords[idx], {
+          returnType: typeEl ? typeEl.value : state.returnRecords[idx].returnType,
+          reason: reasonEl ? reasonEl.value.trim() : state.returnRecords[idx].reason,
+          warehouseStatus: whEl ? whEl.value : state.returnRecords[idx].warehouseStatus,
+          updatedBy: ($('input-staff-name')?.value || state.config.staffName || 'ฝ่ายติดตามพัสดุ').trim(),
+          updatedAt: new Date().toISOString()
+        });
+
+        await TrackerDB.saveGlobalReturnsToCloud(state.returnRecords, state.config.staffName);
+        recomputeLocalReconciliation();
+        renderAll();
+        showToast('✅ บันทึกสถานะพัสดุตีกลับเรียบร้อยแล้ว!');
+      });
+    });
+
+    tbody.querySelectorAll('.btn-del-ret-row').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openAdminDeleteModal('SINGLE_RETURN_ITEM', {
+          id: btn.dataset.delRet,
+          trackingId: btn.dataset.delRetTrk
+        });
+      });
+    });
+  }
+
+  function exportReturnsReportExcel() {
+    const items = state.reconciledReturns?.items || [];
+    if (typeof XLSX === 'undefined' || items.length === 0) {
+      alert('ยังไม่มีรายการพัสดุตีกลับหรือส่งไม่สำเร็จสำหรับส่งออกรายงาน Excel');
+      return;
+    }
+
+    const whMap = {
+      IN_RETURN_TRANSIT: 'กำลังตีกลับกลางทาง / รอติดตาม',
+      RECEIVED_AT_WAREHOUSE: 'รับของคืนเข้าโกดังโรงงานแล้ว',
+      RESOLVED_DELIVERED: 'แก้ไขสำเร็จ (ลูกค้ารับสินค้าแล้ว)'
+    };
+
+    const rows = items.map((it, idx) => ({
+      'ลำดับ': idx + 1,
+      'วันที่ส่งออกเดิม': it.shipDate || 'ไม่ระบุ',
+      'จำนวนวันที่ผ่านมา (วัน)': it.daysElapsed || 0,
+      'ผลการจับคู่คำสั่งซื้อ': it.isMatchedOrder ? 'พบในคำสั่งซื้อเดิม' : 'ไม่พบในคำสั่งซื้อ',
+      'เลขพัสดุ (Tracking ID)': it.trackingId || '',
+      'หมายเลขคำสั่งซื้อ (Order ID)': it.orderId || '',
+      'ขนส่ง (Carrier)': it.carrier || '',
+      'ช่องทางขาย (Platform)': it.platform || '',
+      'ชื่อลูกค้า': it.customerName || '',
+      'จังหวัดปลายทาง': it.province || '',
+      'รายการสินค้า (SKU / รุ่น-สี)': it.sku || '',
+      'จำนวน (ชิ้น)': it.qty || 1,
+      'ประเภทปัญหา': it.returnType === 'FAILED_DELIVERY' ? 'ส่งไม่สำเร็จ / รอติดตาม' : 'ตีกลับ (Returned)',
+      'สาเหตุ': it.reason || '',
+      'สถานะรับของคืนเข้าโกดัง': whMap[it.warehouseStatus] || it.warehouseStatus
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 7 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 20 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 18 },
+      { wch: 14 },
+      { wch: 22 },
+      { wch: 16 },
+      { wch: 34 },
+      { wch: 10 },
+      { wch: 24 },
+      { wch: 32 },
+      { wch: 28 }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, 'Parcel_Returns_Report');
+    XLSX.writeFile(wb, `QueenCosy_Parcel_Returns_${TrackerDB.getTodayString()}.xlsx`);
   }
 
   async function handleLoadSampleData() {

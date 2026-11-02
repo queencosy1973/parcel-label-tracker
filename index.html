@@ -99,9 +99,15 @@
           <span id="tab-badge-followup" class="px-1.5 py-0.5 text-[10px] rounded-full bg-amber-900/70 text-amber-200 font-mono">0</span>
         </button>
 
+        <button data-tab="tab-returns" class="tab-btn px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 whitespace-nowrap transition cursor-pointer text-slate-300 hover:text-white">
+          <i data-lucide="package-x" class="w-4 h-4 text-rose-400"></i>
+          <span>4. รีเช็คพัสดุตีกลับ & ส่งไม่สำเร็จ</span>
+          <span id="tab-badge-returns" class="px-1.5 py-0.5 text-[10px] rounded-full bg-rose-950/90 text-rose-300 border border-rose-700/60">0</span>
+        </button>
+
         <button data-tab="tab-settings" class="tab-btn px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 whitespace-nowrap transition cursor-pointer text-slate-300 hover:text-white">
           <i data-lucide="settings" class="w-4 h-4 text-sky-400"></i>
-          <span>4. ตั้งค่า LINE Bot Webhook & Gemini API</span>
+          <span>5. ตั้งค่า LINE Bot & AI</span>
         </button>
       </div>
     </div>
@@ -595,6 +601,265 @@
               </tr>
             </thead>
             <tbody id="followup-table-body" class="divide-y divide-slate-100 text-xs">
+              <!-- Populated by app.js -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         TAB 4: ระบบรีเช็คพัสดุตีกลับ & ส่งไม่สำเร็จ (จับคู่ข้ามวันอัตโนมัติ)
+         ===================================================================== -->
+    <section id="tab-returns" class="hidden space-y-5">
+      <!-- Top Header & Action Bar -->
+      <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0">
+            <i data-lucide="package-x" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h2 class="font-bold text-slate-900 text-sm sm:text-base">
+                ระบบรีเช็คพัสดุตีกลับ & ส่งไม่สำเร็จ (จับคู่คำสั่งซื้อย้อนหลังทุกวันอัตโนมัติ)
+              </h2>
+              <span class="text-[11px] px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 font-semibold">
+                ค้นหาข้ามวันอัตโนมัติ ไม่ต้องเลือกวันที่ส่งออก
+              </span>
+            </div>
+            <p class="text-xs text-slate-500 mt-0.5">
+              ลากวางไฟล์ Excel/CSV รายงานตีกลับ หรือรูปถ่ายใบปะหน้าของตีกลับ เพื่อเช็คว่าในคำสั่งซื้อทั้งหมดที่อัปโหลดลงไป โดนตีกลับหรือส่งไม่สำเร็จกี่ชิ้น
+            </p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="btn-load-sample-returns" class="px-3 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer">
+            <i data-lucide="flask-conical" class="w-4 h-4 text-amber-600"></i>
+            <span>โหลดตัวอย่างตีกลับ</span>
+          </button>
+
+          <button id="btn-export-returns-excel" class="px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer">
+            <i data-lucide="file-spreadsheet" class="w-4 h-4 text-emerald-600"></i>
+            <span>📥 ดึงรีพอร์ต Excel ตีกลับ</span>
+          </button>
+
+          <button id="btn-clear-returns-admin" class="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer">
+            <i data-lucide="trash-2" class="w-4 h-4 text-rose-600"></i>
+            <span>🗑️ ล้างรายการตีกลับ (แอดมิน)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4 Return Summary KPI Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+        <!-- Card 1: Total Uploaded Orders Across All Days -->
+        <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs">
+          <div class="flex items-center justify-between text-xs font-semibold text-slate-500">
+            <span>1. คำสั่งซื้อทั้งหมดที่อัปโหลดในระบบ</span>
+            <span class="w-7 h-7 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
+              <i data-lucide="database" class="w-4 h-4"></i>
+            </span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span id="ret-kpi-total-orders" class="text-2xl sm:text-3xl font-extrabold text-slate-900">0</span>
+            <span class="text-xs text-slate-500">พัสดุ (ทุกวันรวมกัน)</span>
+          </div>
+          <div id="ret-kpi-total-units" class="mt-1 text-[11px] text-slate-500">รวมสินค้าทั้งหมด 0 ชิ้น</div>
+        </div>
+
+        <!-- Card 2: Total Returned + Failed Delivery & % Rate -->
+        <div class="bg-rose-50/70 rounded-2xl p-4 border-2 border-rose-300 shadow-xs">
+          <div class="flex items-center justify-between text-xs font-bold text-rose-800">
+            <span>2. รวมโดนตีกลับ + ส่งไม่สำเร็จ</span>
+            <span class="w-7 h-7 rounded-lg bg-rose-600 text-white flex items-center justify-center">
+              <i data-lucide="alert-octagon" class="w-4 h-4"></i>
+            </span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span id="ret-kpi-total-issues" class="text-2xl sm:text-3xl font-extrabold text-rose-700">0</span>
+            <span id="ret-kpi-rate-pct" class="text-xs font-bold text-rose-600">(0% ของคำสั่งซื้อทั้งหมด)</span>
+          </div>
+          <div id="ret-kpi-match-breakdown" class="mt-1 text-[11px] font-semibold text-rose-700">
+            จับคู่เจอออเดอร์เดิม: 0 • ไม่พบในออเดอร์: 0
+          </div>
+        </div>
+
+        <!-- Card 3: Failed Delivery (Follow up urgently before return) -->
+        <div class="bg-amber-50/70 rounded-2xl p-4 border border-amber-300 shadow-xs">
+          <div class="flex items-center justify-between text-xs font-bold text-amber-900">
+            <span>3. ส่งไม่สำเร็จ / รอติดตามแก้ไขด่วน</span>
+            <span class="w-7 h-7 rounded-lg bg-amber-500 text-white flex items-center justify-center">
+              <i data-lucide="phone-missed" class="w-4 h-4"></i>
+            </span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span id="ret-kpi-failed-count" class="text-2xl sm:text-3xl font-extrabold text-amber-700">0</span>
+            <span class="text-xs text-amber-800">พัสดุ</span>
+          </div>
+          <div class="mt-1 text-[11px] text-amber-800">ติดต่อลูกค้าไม่ได้ / เลื่อนรับ (โทรตามก่อนตีกลับ)</div>
+        </div>
+
+        <!-- Card 4: Returned to Factory (In-transit vs Received at Warehouse) -->
+        <div class="bg-purple-50/70 rounded-2xl p-4 border border-purple-300 shadow-xs">
+          <div class="flex items-center justify-between text-xs font-bold text-purple-900">
+            <span>4. ตีกลับคืนโรงงาน (Returned)</span>
+            <span class="w-7 h-7 rounded-lg bg-purple-600 text-white flex items-center justify-center">
+              <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+            </span>
+          </div>
+          <div class="mt-2 flex items-baseline gap-2">
+            <span id="ret-kpi-returned-count" class="text-2xl sm:text-3xl font-extrabold text-purple-800">0</span>
+            <span class="text-xs text-purple-700">พัสดุ</span>
+          </div>
+          <div id="ret-kpi-warehouse-breakdown" class="mt-1 text-[11px] font-semibold text-purple-800">
+            กำลังตีกลับกลางทาง: 0 • รับคืนเข้าโกดังแล้ว: 0
+          </div>
+        </div>
+      </div>
+
+      <!-- Drag & Drop Zone + Quick Barcode/Manual Input (Grid) -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <!-- Left 7 Cols: Drag & Drop File / Photo Upload -->
+        <div class="lg:col-span-7 bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+                <i data-lucide="upload-cloud" class="w-5 h-5 text-rose-600"></i>
+                <span>อัปโหลด / ลากวาง (Drag & Drop) ไฟล์ตีกลับ หรือ รูปใบปะหน้าของตีกลับ</span>
+              </h3>
+              <p class="text-xs text-slate-500 mt-0.5">
+                วางได้ทั้งไฟล์ <strong>Excel / CSV (.xlsx, .xls, .csv)</strong> และ <strong>รูปภาพ (.jpg, .png)</strong> ระบบจะวิ่งค้นหาคำสั่งซื้อย้อนหลังทุกวันให้อัตโนมัติ
+              </p>
+            </div>
+          </div>
+
+          <div id="return-dropzone" class="border-2 border-dashed border-rose-300 hover:border-rose-500 rounded-2xl p-6 text-center bg-rose-50/30 transition cursor-pointer">
+            <div class="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-2.5">
+              <i data-lucide="package-x" class="w-6 h-6"></i>
+            </div>
+            <p class="font-bold text-slate-800 text-sm">ลากไฟล์ Excel/CSV รายงานตีกลับ หรือ รูปใบลาเบลของตีกลับ มาวางที่นี่</p>
+            <p class="text-xs text-slate-500 mt-1">
+              รองรับไฟล์จาก Shopee, TikTok Shop, Lazada, ขนส่งทุกค่าย หรือรูปถ่ายใบปะหน้าพัสดุที่ตีกลับมาถึงหน้าโรงงาน
+            </p>
+            <div class="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              <label class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition" onclick="event.stopPropagation()">
+                <i data-lucide="file-spreadsheet" class="w-4 h-4"></i>
+                <span>เลือกไฟล์ Excel/CSV หรือ รูปภาพ</span>
+                <input type="file" id="input-return-files" accept=".xlsx,.xls,.csv,image/*" multiple class="hidden" />
+              </label>
+
+              <label class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition" onclick="event.stopPropagation()">
+                <i data-lucide="camera" class="w-4 h-4 text-rose-300"></i>
+                <span>ถ่ายรูปใบปะหน้าของตีกลับ</span>
+                <input type="file" id="input-return-camera" accept="image/*" capture="environment" class="hidden" />
+              </label>
+            </div>
+          </div>
+
+          <!-- Return Processing Progress Bar -->
+          <div id="return-upload-progress" class="hidden p-3.5 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+              <div class="w-4 h-4 border-2 border-rose-600 border-t-transparent rounded-full animate-spin"></div>
+              <span id="return-upload-status-text" class="text-xs font-bold text-rose-900">กำลังประมวลผลและจับคู่คำสั่งซื้อย้อนหลัง...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right 5 Cols: Quick Scan / Manual Entry for Returned or Failed Parcels -->
+        <div class="lg:col-span-5 bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-3.5">
+          <div>
+            <h3 class="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+              <i data-lucide="scan-barcode" class="w-5 h-5 text-indigo-600"></i>
+              <span>ยิงบาร์โค้ด / วางเลขพัสดุตีกลับด่วน (ทีละชิ้นหรือหลายบรรทัด)</span>
+            </h3>
+            <p class="text-xs text-slate-500 mt-0.5">
+              ใช้ปืนยิงบาร์โค้ดตอนรับของตีกลับเข้าโกดัง หรือก๊อปปี้เลข Tracking / Order ID มาวางได้หลายบรรทัดพร้อมกัน
+            </p>
+          </div>
+
+          <div>
+            <textarea id="input-quick-return-codes" rows="3" placeholder="ยิงบาร์โค้ด หรือวางเลข Tracking / Order ID (วางได้หลายเลข บรรทัดละ 1 เลข)..." class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono focus:outline-none focus:border-rose-500"></textarea>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+            <div>
+              <label class="text-slate-500 font-semibold block mb-1">ประเภทปัญหา</label>
+              <select id="select-quick-return-type" class="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold text-slate-800 bg-white">
+                <option value="RETURNED">↩️ ตีกลับ (Returned)</option>
+                <option value="FAILED_DELIVERY">⚠️ ส่งไม่สำเร็จ / รอติดตาม</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-slate-500 font-semibold block mb-1">สถานะของตีกลับ</label>
+              <select id="select-quick-warehouse-status" class="w-full px-3 py-2 rounded-xl border border-slate-300 font-bold text-slate-800 bg-white">
+                <option value="IN_RETURN_TRANSIT">🚚 กำลังตีกลับกลางทาง / รอตาม</option>
+                <option value="RECEIVED_AT_WAREHOUSE">✅ ของถึงโกดังโรงงานแล้ว</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <input type="text" id="input-quick-return-reason" placeholder="สาเหตุ เช่น ลูกค้าปฏิเสธรับของ, ติดต่อไม่ได้, ที่อยู่ผิด..." class="flex-1 px-3 py-2 rounded-xl border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
+            <button id="btn-add-quick-return" class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shrink-0">
+              <i data-lucide="plus-circle" class="w-4 h-4 text-rose-400"></i>
+              <span>บันทึก & จับคู่ออเดอร์</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter Pills & Search Bar for Returns Table -->
+      <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap items-center gap-1.5" id="return-filter-pills">
+            <button data-rfilter="ALL" class="rfilter-pill active px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-900 text-white cursor-pointer transition">
+              ทั้งหมด (<span id="rcnt-all">0</span>)
+            </button>
+            <button data-rfilter="RETURNED" class="rfilter-pill px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-50 text-purple-800 border border-purple-200 hover:bg-purple-100 cursor-pointer transition">
+              ↩️ ตีกลับ (<span id="rcnt-returned">0</span>)
+            </button>
+            <button data-rfilter="FAILED_DELIVERY" class="rfilter-pill px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 cursor-pointer transition">
+              ⚠️ ส่งไม่สำเร็จ (<span id="rcnt-failed">0</span>)
+            </button>
+            <button data-rfilter="IN_RETURN_TRANSIT" class="rfilter-pill px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100 cursor-pointer transition">
+              🚚 กำลังตีกลับ/ยังไม่ถึงโกดัง (<span id="rcnt-transit">0</span>)
+            </button>
+            <button data-rfilter="RECEIVED_AT_WAREHOUSE" class="rfilter-pill px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 cursor-pointer transition">
+              ✅ รับของคืนเข้าโกดังแล้ว (<span id="rcnt-received">0</span>)
+            </button>
+            <button data-rfilter="UNMATCHED" class="rfilter-pill px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200 cursor-pointer transition">
+              ❓ ไม่พบในคำสั่งซื้อเดิม (<span id="rcnt-unmatched">0</span>)
+            </button>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial justify-end">
+            <div class="relative min-w-[240px]">
+              <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+              <input type="text" id="input-return-search" placeholder="ค้นหา Tracking, Order ID, รุ่นโซฟา, ชื่อลูกค้า..." class="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Returns & Failed Deliveries Table -->
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="bg-slate-900 text-white text-[11px] uppercase tracking-wider">
+                <th class="py-3 px-3 text-center w-10">#</th>
+                <th class="py-3 px-3.5">วันที่ส่งออกเดิม & ผลการจับคู่ออเดอร์</th>
+                <th class="py-3 px-3.5">เลขพัสดุ (Tracking) & ขนส่ง</th>
+                <th class="py-3 px-3.5">Order ID & ลูกค้าปลายทาง</th>
+                <th class="py-3 px-3.5">สินค้าในพัสดุ (SKU / รุ่น-สี)</th>
+                <th class="py-3 px-3 text-center">จำนวน</th>
+                <th class="py-3 px-3.5">ประเภท & สาเหตุตีกลับ/ส่งไม่สำเร็จ</th>
+                <th class="py-3 px-3.5">สถานะรับของคืนเข้าโกดัง</th>
+                <th class="py-3 px-3 text-center">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody id="returns-table-body" class="divide-y divide-slate-100 text-xs">
               <!-- Populated by app.js -->
             </tbody>
           </table>

@@ -2063,6 +2063,555 @@ ${skuHintList}
     };
   }
 
+  // ===========================================================================
+  // 8. GLOBAL RETURN & FAILED DELIVERY RE-CHECK ENGINE (CROSS-DATE MATCHER)
+  // ===========================================================================
+
+  const RETURN_BATCH_ID = 'QC_LABEL_RETURNS_ALL';
+
+  function deduplicateReturnRecords(records) {
+    if (!Array.isArray(records)) return [];
+    const map = new Map();
+
+    records.forEach((raw) => {
+      if (!raw) return;
+      const cleanTrk = normalizeTracking(raw.cleanTracking || raw.trackingId || '');
+      const cleanOrd = normalizeOrderId(raw.cleanOrderId || raw.orderId || '');
+      if (!cleanTrk && !cleanOrd) return;
+
+      const key = cleanTrk ? `TRK:${cleanTrk}` : `ORD:${cleanOrd}`;
+      const normalized = {
+        id: raw.id || `RET-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`,
+        trackingId: raw.trackingId ? String(raw.trackingId).trim() : cleanTrk,
+        cleanTracking: cleanTrk,
+        orderId: raw.orderId ? String(raw.orderId).trim() : cleanOrd,
+        cleanOrderId: cleanOrd,
+        returnType: raw.returnType === 'FAILED_DELIVERY' ? 'FAILED_DELIVERY' : 'RETURNED',
+        warehouseStatus: raw.warehouseStatus || (raw.returnType === 'FAILED_DELIVERY' ? 'IN_RETURN_TRANSIT' : 'IN_RETURN_TRANSIT'),
+        reason: String(raw.reason || '').trim(),
+        reportedDate: raw.reportedDate || getTodayString(),
+        carrier: raw.carrier || '',
+        platform: raw.platform || '',
+        sku: String(raw.sku || '').trim(),
+        qty: parseInt(raw.qty, 10) || 0,
+        customerName: String(raw.customerName || '').trim(),
+        province: String(raw.province || '').trim(),
+        shipDate: raw.shipDate || '',
+        updatedBy: raw.updatedBy || 'ฝ่ายติดตามพัสดุ',
+        updatedAt: raw.updatedAt || new Date().toISOString()
+      };
+
+      if (!map.has(key)) {
+        map.set(key, normalized);
+      } else {
+        const prev = map.get(key);
+        map.set(key, Object.assign({}, prev, normalized, {
+          id: prev.id,
+          trackingId: normalized.trackingId || prev.trackingId,
+          cleanTracking: cleanTrk || prev.cleanTracking,
+          orderId: normalized.orderId || prev.orderId,
+          cleanOrderId: cleanOrd || prev.cleanOrderId,
+          returnType: normalized.returnType || prev.returnType,
+          warehouseStatus:
+            normalized.warehouseStatus && normalized.warehouseStatus !== 'IN_RETURN_TRANSIT'
+              ? normalized.warehouseStatus
+              : (prev.warehouseStatus || 'IN_RETURN_TRANSIT'),
+          reason: normalized.reason || prev.reason,
+          sku: normalized.sku || prev.sku,
+          qty: normalized.qty || prev.qty,
+          customerName: normalized.customerName || prev.customerName,
+          province: normalized.province || prev.province,
+          shipDate: normalized.shipDate || prev.shipDate
+        }));
+      }
+    });
+
+    return Array.from(map.values());
+  }
+
+  /**
+   * Fetches all uploaded order batches (QC_LABEL_ORDERS_*) and label scans (QC_LABEL_SCAN_*)
+   * across all dates so returns/failed deliveries can automatically match orders from any past date.
+   */
+  async function fetchAllUploadedOrdersIndexFromCloud(customUrl, customKey) {
+    const byTracking = new Map();
+    const byOrderId = new Map();
+    const labelByTracking = new Map();
+    const labelByOrderId = new Map();
+    const uniqueOrderKeys = new Set();
+    let totalOrderUnits = 0;
+
+    try {
+      const query = 'production_batches?or=(batch_id.like.QC_LABEL_ORDERS_*,batch_id.like.QC_LABEL_SCAN_*)&select=batch_id,items_json,updated_at&order=updated_at.desc&limit=90';
+      const [res, crossQrData] = await Promise.all([
+        supabaseRequest(query, { method: 'GET' }, customUrl, customKey),
+        fetchCrossDateScansFromCloud(customUrl, customKey)
+      ]);
+
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const bid = String(row.batch_id || '');
+            const parsed = typeof row.items_json === 'string'
+              ? JSON.parse(row.items_json || '{}')
+              : (row.items_json || {});
+
+            if (bid.startsWith('QC_LABEL_ORDERS_')) {
+              const batchDate = bid.replace('QC_LABEL_ORDERS_', '');
+              const orders = Array.isArray(parsed.orders) ? parsed.orders : [];
+              for (const o of orders) {
+                if (!o) continue;
+                const trk = normalizeTracking(o.cleanTracking || o.trackingId || '');
+                const ord = normalizeOrderId(o.orderId || '');
+                if (!trk && !ord) continue;
+
+                const parcelKey = trk ? `TRK:${trk}` : `ORD:${ord}`;
+                const qty = parseInt(o.qty, 10) || 1;
+                if (!uniqueOrderKeys.has(parcelKey)) {
+                  uniqueOrderKeys.add(parcelKey);
+                  totalOrderUnits += qty;
+                }
+
+                const enriched = Object.assign({}, o, {
+                  shipDate: o.shipDate || batchDate,
+                  cleanTracking: trk,
+                  cleanOrderId: ord
+                });
+
+                if (trk && !byTracking.has(trk)) byTracking.set(trk, enriched);
+                if (ord && !byOrderId.has(ord)) byOrderId.set(ord, enriched);
+              }
+            } else if (bid.startsWith('QC_LABEL_SCAN_')) {
+              const batchDate = bid.replace('QC_LABEL_SCAN_', '');
+              const scans = Array.isArray(parsed.scans) ? parsed.scans : [];
+              for (const ls of scans) {
+                if (!ls) continue;
+                const trk = normalizeTracking(ls.cleanTracking || ls.trackingId || '');
+                const ord = normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
+                const enrichedLbl = Object.assign({}, ls, {
+                  scanDate: ls.scanDate || batchDate,
+                  cleanTracking: trk,
+                  cleanOrderId: ord
+                });
+                if (trk && !labelByTracking.has(trk)) labelByTracking.set(trk, enrichedLbl);
+                if (ord && !labelByOrderId.has(ord)) labelByOrderId.set(ord, enrichedLbl);
+              }
+            }
+          }
+        }
+      }
+
+      const qrByTracking = new Map();
+      const qrByOrderId = new Map();
+      (crossQrData.qrScans || []).forEach((qs) => {
+        const trk = normalizeTracking(qs.cleanTracking || qs.trackingId || '');
+        const ord = normalizeOrderId(qs.matchedOrderId || '');
+        if (trk && !qrByTracking.has(trk)) qrByTracking.set(trk, qs);
+        if (ord && !qrByOrderId.has(ord)) qrByOrderId.set(ord, qs);
+      });
+
+      return {
+        byTracking,
+        byOrderId,
+        labelByTracking,
+        labelByOrderId,
+        qrByTracking,
+        qrByOrderId,
+        totalUploadedOrders: uniqueOrderKeys.size,
+        totalUploadedUnits: totalOrderUnits
+      };
+    } catch (e) {
+      console.warn('fetchAllUploadedOrdersIndexFromCloud warning:', e);
+      return {
+        byTracking,
+        byOrderId,
+        labelByTracking,
+        labelByOrderId,
+        qrByTracking: new Map(),
+        qrByOrderId: new Map(),
+        totalUploadedOrders: 0,
+        totalUploadedUnits: 0
+      };
+    }
+  }
+
+  async function fetchGlobalReturnsFromCloud(customUrl, customKey) {
+    try {
+      const res = await supabaseRequest(
+        `production_batches?batch_id=eq.${encodeURIComponent(RETURN_BATCH_ID)}&select=items_json,updated_at`,
+        { method: 'GET' },
+        customUrl,
+        customKey
+      );
+      if (!res.ok) return [];
+      const rows = await res.json();
+      const row = rows && rows[0];
+      if (!row || !row.items_json) return [];
+      const parsed = typeof row.items_json === 'string' ? JSON.parse(row.items_json) : row.items_json;
+      return deduplicateReturnRecords(Array.isArray(parsed?.returns) ? parsed.returns : []);
+    } catch (e) {
+      console.warn('fetchGlobalReturnsFromCloud warning:', e);
+      return [];
+    }
+  }
+
+  async function saveGlobalReturnsToCloud(returnRecords, updatedBy = 'ฝ่ายติดตามพัสดุ', customUrl, customKey) {
+    const clean = deduplicateReturnRecords(returnRecords);
+    try {
+      const payload = {
+        batch_id: RETURN_BATCH_ID,
+        batch_name: 'Global Parcel Returns & Failed Deliveries',
+        source: 'QC_LABEL_RETURNS',
+        status: 'COMPLETED',
+        total_skus: clean.length,
+        total_units: clean.reduce((sum, r) => sum + (parseInt(r.qty, 10) || 1), 0),
+        total_material_cost: 0,
+        imported_by: updatedBy,
+        items_json: {
+          returns: clean,
+          updatedAt: new Date().toISOString(),
+          updatedBy
+        },
+        updated_at: new Date().toISOString()
+      };
+
+      const res = await supabaseRequest(
+        'production_batches?on_conflict=batch_id',
+        {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify(payload)
+        },
+        customUrl,
+        customKey
+      );
+      return res.ok;
+    } catch (e) {
+      console.warn('saveGlobalReturnsToCloud error:', e);
+      return false;
+    }
+  }
+
+  async function clearGlobalReturnsFromCloud(customUrl, customKey) {
+    try {
+      const res = await supabaseRequest(
+        `production_batches?batch_id=eq.${encodeURIComponent(RETURN_BATCH_ID)}`,
+        { method: 'DELETE' },
+        customUrl,
+        customKey
+      );
+      return res.ok;
+    } catch (e) {
+      console.warn('clearGlobalReturnsFromCloud error:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Parses Excel / CSV rows of returned or failed-delivery parcels from Shopee, TikTok, Lazada, or Carrier reports
+   */
+  function parseReturnFileRows(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(12, rows.length); i++) {
+      const rowStr = (rows[i] || []).join(' ').toLowerCase();
+      if (
+        rowStr.includes('tracking') ||
+        rowStr.includes('พัสดุ') ||
+        rowStr.includes('order') ||
+        rowStr.includes('คำสั่งซื้อ') ||
+        rowStr.includes('ตีกลับ') ||
+        rowStr.includes('สถานะ') ||
+        rowStr.includes('waybill')
+      ) {
+        headerIdx = i;
+        break;
+      }
+    }
+
+    const headers = headerIdx !== -1
+      ? (rows[headerIdx] || []).map((h) => String(h !== null && h !== undefined ? h : '').trim().toLowerCase())
+      : [];
+
+    const findCol = (keywords, excludes = []) => {
+      if (headers.length === 0) return -1;
+      for (const kw of keywords) {
+        const idx = headers.findIndex((h) => {
+          if (!h) return false;
+          if (excludes.some((ex) => h.includes(ex))) return false;
+          return h === kw || h.includes(kw);
+        });
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    const idxTrack = findCol(['หมายเลขติดตามพัสดุ', 'tracking', 'เลขพัสดุ', 'เลขติดตาม', 'waybill'], ['วัน', 'date', 'เวลา']);
+    const idxOrder = findCol(['หมายเลขคำสั่งซื้อ', 'order id', 'รหัสคำสั่งซื้อ', 'order sn', 'order no', 'คำสั่งซื้อ', 'เลขออเดอร์'], ['วัน', 'date', 'status', 'สถานะ', 'tracking']);
+    const idxStatus = findCol(['สถานะการคืน', 'สถานะพัสดุ', 'สถานะคำสั่งซื้อ', 'สถานะ', 'status', 'ประเภท']);
+    const idxReason = findCol(['สาเหตุ', 'เหตุผล', 'หมายเหตุ', 'reason', 'remark', 'note', 'รายละเอียด']);
+    const idxSku = findCol(['seller sku', 'เลขอ้างอิง sku', 'รหัสสินค้า', 'sku', 'ชื่อสินค้า', 'product name'], ['quantity', 'จำนวน']);
+    const idxVar = findCol(['ชื่อตัวเลือก', 'variation', 'ตัวเลือก', 'สี', 'ขนาด']);
+    const idxQty = findCol(['จำนวน', 'quantity', 'qty']);
+    const idxCarrier = findCol(['ผู้ให้บริการจัดส่ง', 'shipping provider', 'ขนส่ง', 'carrier']);
+    const idxCustomer = findCol(['ชื่อผู้รับ', 'recipient', 'buyer', 'ชื่อลูกค้า', 'ลูกค้า']);
+    const idxProvince = findCol(['จังหวัด', 'province', 'state']);
+    const idxPlatform = findCol(['ช่องทาง', 'platform', 'channel']);
+
+    const startRow = headerIdx !== -1 ? headerIdx + 1 : 0;
+    const parsed = [];
+
+    for (let r = startRow; r < rows.length; r++) {
+      const row = rows[r];
+      if (!Array.isArray(row) || row.every((c) => !String(c || '').trim())) continue;
+
+      let rawTrack = idxTrack !== -1 ? String(row[idxTrack] || '').trim() : '';
+      let rawOrder = idxOrder !== -1 ? String(row[idxOrder] || '').trim() : '';
+      let rawStatus = idxStatus !== -1 ? String(row[idxStatus] || '').trim() : '';
+      let rawReason = idxReason !== -1 ? String(row[idxReason] || '').trim() : '';
+      let rawSku = idxSku !== -1 ? String(row[idxSku] || '').trim() : '';
+      const rawVar = idxVar !== -1 ? String(row[idxVar] || '').trim() : '';
+      const rawQty = idxQty !== -1 ? parseInt(row[idxQty], 10) || 0 : 0;
+      const rawCarrier = idxCarrier !== -1 ? String(row[idxCarrier] || '').trim() : '';
+      const rawCustomer = idxCustomer !== -1 ? String(row[idxCustomer] || '').trim() : '';
+      const rawProvince = idxProvince !== -1 ? String(row[idxProvince] || '').trim() : '';
+      const rawPlatform = idxPlatform !== -1 ? String(row[idxPlatform] || '').trim() : '';
+
+      // Heuristic extraction if columns weren't standard or user dropped a 1-2 column sheet
+      if (!rawTrack && !rawOrder) {
+        row.forEach((cell) => {
+          const val = String(cell || '').trim();
+          if (!val) return;
+          if (!rawTrack && /^(SPXTH|TH\d{8,}|THT|66\d{11,14}|82\d{9,12}|KEX|KER|LEX|E[A-Z]\d{9}TH)/i.test(val)) {
+            rawTrack = val;
+          } else if (!rawOrder && /^(\d{14,20}|\d{6}[A-Z0-9]{8})$/i.test(val)) {
+            rawOrder = val;
+          } else if (!rawReason && val.length >= 3) {
+            rawReason = val;
+          }
+        });
+      }
+
+      const cleanTrk = normalizeTracking(rawTrack);
+      const cleanOrd = normalizeOrderId(rawOrder);
+      if (!cleanTrk && !cleanOrd) continue;
+
+      if (rawVar && rawSku && !rawSku.includes(rawVar)) {
+        rawSku = `${rawSku} (${rawVar})`;
+      } else if (rawVar && !rawSku) {
+        rawSku = rawVar;
+      }
+
+      const combinedStatusText = `${rawStatus} ${rawReason}`.toLowerCase();
+      let returnType = 'RETURNED';
+      if (
+        combinedStatusText.includes('ไม่สำเร็จ') ||
+        combinedStatusText.includes('ติดต่อไม่ได้') ||
+        combinedStatusText.includes('เลื่อน') ||
+        combinedStatusText.includes('ตกค้าง') ||
+        combinedStatusText.includes('failed') ||
+        combinedStatusText.includes('attempt')
+      ) {
+        if (!combinedStatusText.includes('ตีกลับ') && !combinedStatusText.includes('return')) {
+          returnType = 'FAILED_DELIVERY';
+        }
+      }
+
+      let warehouseStatus = 'IN_RETURN_TRANSIT';
+      if (
+        combinedStatusText.includes('รับคืนแล้ว') ||
+        combinedStatusText.includes('ถึงโกดัง') ||
+        combinedStatusText.includes('ถึงคลัง') ||
+        combinedStatusText.includes('คืนผู้ส่งสำเร็จ')
+      ) {
+        warehouseStatus = 'RECEIVED_AT_WAREHOUSE';
+      }
+
+      parsed.push({
+        id: `RET-${Date.now()}-${r}`,
+        trackingId: rawTrack || cleanTrk,
+        cleanTracking: cleanTrk,
+        orderId: rawOrder || cleanOrd,
+        cleanOrderId: cleanOrd,
+        returnType,
+        warehouseStatus,
+        reason: rawReason || rawStatus || (returnType === 'RETURNED' ? 'พัสดุตีกลับจากขนส่ง' : 'ขนส่งนำจ่ายไม่สำเร็จ'),
+        reportedDate: getTodayString(),
+        carrier: rawCarrier,
+        platform: rawPlatform,
+        sku: rawSku,
+        qty: rawQty,
+        customerName: rawCustomer,
+        province: rawProvince
+      });
+    }
+
+    return deduplicateReturnRecords(parsed);
+  }
+
+  function calculateDaysBetween(startDateStr, endDateStr) {
+    if (!startDateStr) return 0;
+    const d1 = new Date(`${startDateStr}T00:00:00Z`);
+    const d2 = new Date(`${endDateStr || getTodayString()}T00:00:00Z`);
+    if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 0;
+    return Math.max(0, Math.round((d2.getTime() - d1.getTime()) / (24 * 3600 * 1000)));
+  }
+
+  /**
+   * Matches all return / failed delivery records against the global multi-day order index
+   */
+  function reconcileGlobalReturns(returnRecords = [], globalIndex = {}, fallbackOrders = [], fallbackLabels = []) {
+    const cleanReturns = deduplicateReturnRecords(returnRecords);
+    const byTracking = new Map(globalIndex.byTracking || []);
+    const byOrderId = new Map(globalIndex.byOrderId || []);
+    const labelByTracking = new Map(globalIndex.labelByTracking || []);
+    const labelByOrderId = new Map(globalIndex.labelByOrderId || []);
+    const qrByTracking = new Map(globalIndex.qrByTracking || []);
+    const qrByOrderId = new Map(globalIndex.qrByOrderId || []);
+
+    // Ensure any current active-date orders & labels in memory are also indexed immediately
+    (fallbackOrders || []).forEach((o) => {
+      const trk = normalizeTracking(o.cleanTracking || o.trackingId || '');
+      const ord = normalizeOrderId(o.orderId || '');
+      if (trk && !byTracking.has(trk)) byTracking.set(trk, o);
+      if (ord && !byOrderId.has(ord)) byOrderId.set(ord, o);
+    });
+    (fallbackLabels || []).forEach((ls) => {
+      const trk = normalizeTracking(ls.cleanTracking || ls.trackingId || '');
+      const ord = normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
+      if (trk && !labelByTracking.has(trk)) labelByTracking.set(trk, ls);
+      if (ord && !labelByOrderId.has(ord)) labelByOrderId.set(ord, ls);
+    });
+
+    const today = getTodayString();
+    let returnedCount = 0;
+    let failedDeliveryCount = 0;
+    let inReturnTransitCount = 0;
+    let receivedWarehouseCount = 0;
+    let resolvedCount = 0;
+    let matchedOrderCount = 0;
+    let unmatchedOrderCount = 0;
+
+    const items = cleanReturns.map((ret) => {
+      const trk = ret.cleanTracking;
+      const ord = ret.cleanOrderId;
+
+      const matchedOrder = (trk && byTracking.get(trk)) || (ord && byOrderId.get(ord)) || null;
+      const matchedLabel = (trk && labelByTracking.get(trk)) || (ord && labelByOrderId.get(ord)) || null;
+      const matchedQr = (trk && qrByTracking.get(trk)) || (ord && qrByOrderId.get(ord)) || null;
+
+      const effectiveTracking = ret.trackingId || (matchedOrder ? matchedOrder.trackingId : '') || (matchedLabel ? matchedLabel.trackingId : '') || '';
+      const effectiveCleanTracking = normalizeTracking(effectiveTracking);
+      const effectiveOrderId = ret.orderId || (matchedOrder ? matchedOrder.orderId : '') || (matchedLabel ? matchedLabel.orderId : '') || (matchedQr ? matchedQr.matchedOrderId : '') || '';
+      const effectiveShipDate = (matchedOrder && matchedOrder.shipDate) || (matchedLabel && matchedLabel.scanDate) || (matchedQr && matchedQr.scanDate) || ret.shipDate || '';
+      const effectiveCarrier = detectCarrier(
+        effectiveCleanTracking,
+        ret.carrier || (matchedOrder ? matchedOrder.carrier : '') || (matchedLabel ? matchedLabel.carrier : '')
+      );
+      const effectivePlatform = detectPlatform(
+        effectiveOrderId,
+        ret.platform || (matchedOrder ? matchedOrder.platform : '') || (matchedLabel ? matchedLabel.platform : ''),
+        effectiveCarrier
+      );
+      const effectiveSku = (matchedOrder && matchedOrder.sku) || ret.sku || (matchedLabel && matchedLabel.sku) || (matchedQr && matchedQr.matchedSku) || 'ไม่พบในไฟล์คำสั่งซื้อเดิม';
+      const effectiveQty = (matchedOrder && parseInt(matchedOrder.qty, 10)) || ret.qty || (matchedLabel && parseInt(matchedLabel.qty, 10)) || 1;
+      const effectiveCustomer = (matchedOrder && matchedOrder.customerName) || ret.customerName || (matchedLabel && matchedLabel.customerName) || '';
+      const effectiveProvince = (matchedOrder && matchedOrder.province) || ret.province || (matchedLabel && matchedLabel.province) || '';
+
+      const isMatchedOrder = Boolean(matchedOrder || matchedLabel || matchedQr);
+      if (isMatchedOrder) matchedOrderCount++;
+      else unmatchedOrderCount++;
+
+      if (ret.returnType === 'FAILED_DELIVERY') failedDeliveryCount++;
+      else returnedCount++;
+
+      if (ret.warehouseStatus === 'RECEIVED_AT_WAREHOUSE') receivedWarehouseCount++;
+      else if (ret.warehouseStatus === 'RESOLVED_DELIVERED') resolvedCount++;
+      else inReturnTransitCount++;
+
+      return {
+        id: ret.id,
+        trackingId: effectiveTracking,
+        cleanTracking: effectiveCleanTracking,
+        orderId: effectiveOrderId,
+        cleanOrderId: normalizeOrderId(effectiveOrderId),
+        shipDate: effectiveShipDate,
+        daysElapsed: effectiveShipDate ? calculateDaysBetween(effectiveShipDate, today) : 0,
+        reportedDate: ret.reportedDate || today,
+        carrier: effectiveCarrier,
+        platform: effectivePlatform,
+        sku: effectiveSku,
+        qty: effectiveQty,
+        customerName: effectiveCustomer,
+        province: effectiveProvince,
+        returnType: ret.returnType || 'RETURNED',
+        warehouseStatus: ret.warehouseStatus || 'IN_RETURN_TRANSIT',
+        reason: ret.reason || '',
+        isMatchedOrder,
+        hasOrder: Boolean(matchedOrder),
+        hasQr: Boolean(matchedQr),
+        hasPhoto: Boolean(matchedLabel),
+        labelScanId: matchedLabel ? matchedLabel.id : '',
+        updatedBy: ret.updatedBy || 'ฝ่ายติดตามพัสดุ',
+        updatedAt: ret.updatedAt || ''
+      };
+    });
+
+    const totalUploadedOrders = Math.max(globalIndex.totalUploadedOrders || 0, byTracking.size, byOrderId.size);
+    const totalUploadedUnits = Math.max(globalIndex.totalUploadedUnits || 0, totalUploadedOrders);
+    const totalReturnAndFailed = items.length;
+    const returnRatePct = totalUploadedOrders > 0
+      ? Number(((totalReturnAndFailed / totalUploadedOrders) * 100).toFixed(1))
+      : 0;
+
+    return {
+      items,
+      summary: {
+        totalUploadedOrders,
+        totalUploadedUnits,
+        totalReturnAndFailed,
+        returnRatePct,
+        returnedCount,
+        failedDeliveryCount,
+        inReturnTransitCount,
+        receivedWarehouseCount,
+        resolvedCount,
+        matchedOrderCount,
+        unmatchedOrderCount
+      }
+    };
+  }
+
+  function getSampleReturnDataset(dateStr) {
+    const d = dateStr || getTodayString();
+    return [
+      {
+        id: 'RET-SMP-1',
+        trackingId: 'KEX9012345678TH',
+        cleanTracking: 'KEX9012345678TH',
+        orderId: '261027SPX8804D',
+        cleanOrderId: '261027SPX8804D',
+        returnType: 'RETURNED',
+        warehouseStatus: 'IN_RETURN_TRANSIT',
+        reason: 'ลูกค้าปฏิเสธการรับสินค้า (เปลี่ยนใจ) ขนส่งกำลังตีกลับต้นทาง',
+        reportedDate: d
+      },
+      {
+        id: 'RET-SMP-2',
+        trackingId: '66850998877665',
+        cleanTracking: '66850998877665',
+        orderId: '880012345678905',
+        cleanOrderId: '880012345678905',
+        returnType: 'FAILED_DELIVERY',
+        warehouseStatus: 'IN_RETURN_TRANSIT',
+        reason: 'ขนส่งโทรติดต่อลูกค้าไม่ได้ 2 ครั้ง รอแอดมินโทรตามลูกค้าด่วน',
+        reportedDate: d
+      }
+    ];
+  }
+
   return {
     DEFAULT_SUPABASE_URL,
     DEFAULT_SUPABASE_KEY,
@@ -2099,6 +2648,14 @@ ${skuHintList}
     parseOrderRows,
     parseCarrierStatusRows,
     createSampleLabelSvg,
-    getSampleDataset
+    getSampleDataset,
+    deduplicateReturnRecords,
+    fetchAllUploadedOrdersIndexFromCloud,
+    fetchGlobalReturnsFromCloud,
+    saveGlobalReturnsToCloud,
+    clearGlobalReturnsFromCloud,
+    parseReturnFileRows,
+    reconcileGlobalReturns,
+    getSampleReturnDataset
   };
 });
