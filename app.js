@@ -264,6 +264,9 @@
     // Import Orders Modal
     setupImportOrdersModal();
 
+    // Admin Password-Protected Delete Modal
+    setupAdminDeleteModal();
+
     // Tab 2 Upload & AI Inspector Controls
     setupTab2AiQueueControls();
 
@@ -488,6 +491,9 @@
                   ? `<button data-view-scan="${escapeHtml(item.labelScanId)}" class="btn-view-photo px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold cursor-pointer transition">ตรวจคู่รูป</button>`
                   : `<button data-upload-for="${escapeHtml(item.trackingId)}" class="btn-jump-upload px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-bold cursor-pointer transition">+ อัปโหลดรูป</button>`
               }
+              <button data-del-tracking="${escapeHtml(item.cleanTracking)}" data-del-order="${escapeHtml(item.cleanOrderId)}" data-del-scan="${escapeHtml(item.labelScanId || '')}" title="ลบรายการนี้ (ต้องใช้รหัสผ่านแอดมิน)" class="btn-delete-row-item p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 cursor-pointer transition">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>
             </div>
           </td>
         </tr>
@@ -507,6 +513,16 @@
     tbody.querySelectorAll('.btn-jump-upload').forEach((btn) => {
       btn.addEventListener('click', () => {
         switchTab('tab-ai-queue');
+      });
+    });
+
+    tbody.querySelectorAll('.btn-delete-row-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        openAdminDeleteModal('SINGLE_ITEM', {
+          cleanTracking: btn.dataset.delTracking || '',
+          cleanOrderId: btn.dataset.delOrder || '',
+          scanId: btn.dataset.delScan || ''
+        });
       });
     });
   }
@@ -822,14 +838,12 @@
   async function handleDeleteInspectorScan() {
     const scanId = $('edit-scan-id')?.value;
     if (!scanId) return;
-    if (!confirm('ต้องการลบรูปใบปะหน้าพัสดุรายการนี้ออกจากระบบใช่หรือไม่?')) return;
-
-    state.labelScans = state.labelScans.filter((s) => s.id !== scanId);
-    state.selectedScanId = state.labelScans[0]?.id || '';
-    recomputeLocalReconciliation();
-    await TrackerDB.saveLabelScansToCloud(state.activeDate, state.labelScans, state.config.staffName);
-    renderAll();
-    showToast('ลบรูปใบปะหน้าพัสดุเรียบร้อยแล้ว');
+    const scan = state.labelScans.find((s) => s.id === scanId);
+    openAdminDeleteModal('SINGLE_ITEM', {
+      scanId,
+      cleanTracking: scan?.cleanTracking || '',
+      cleanOrderId: ''
+    });
   }
 
   // ===========================================================================
@@ -1301,6 +1315,7 @@
     if ($('cfg-line-access-token')) $('cfg-line-access-token').value = cfg.lineChannelAccessToken || '';
     if ($('cfg-gemini-api-key')) $('cfg-gemini-api-key').value = cfg.geminiApiKey || '';
     if ($('cfg-gemini-model')) $('cfg-gemini-model').value = cfg.geminiModel || 'gemini-flash-latest';
+    if ($('cfg-admin-password')) $('cfg-admin-password').value = cfg.adminPassword || '1973';
   }
 
   function setupTab4SettingsControls() {
@@ -1329,6 +1344,7 @@
         lineChannelAccessToken: ($('cfg-line-access-token')?.value || '').trim(),
         geminiApiKey: ($('cfg-gemini-api-key')?.value || '').trim(),
         geminiModel: $('cfg-gemini-model')?.value || 'gemini-flash-latest',
+        adminPassword: ($('cfg-admin-password')?.value || '1973').trim() || '1973',
         staffName: ($('input-staff-name')?.value || 'ฝ่ายติดตามพัสดุ').trim()
       };
 
@@ -1382,6 +1398,134 @@
       };
       reader.readAsArrayBuffer(file);
     });
+  }
+
+  let pendingDeleteContext = { mode: 'BULK_DAILY', payload: null };
+
+  function setupAdminDeleteModal() {
+    const modal = $('modal-admin-delete');
+    $('btn-open-admin-clear')?.addEventListener('click', () => {
+      openAdminDeleteModal('BULK_DAILY', null);
+    });
+    $('btn-close-delete-modal')?.addEventListener('click', () => modal?.classList.add('hidden'));
+    $('btn-cancel-admin-delete')?.addEventListener('click', () => modal?.classList.add('hidden'));
+
+    $('input-admin-delete-password')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        $('btn-confirm-admin-delete')?.click();
+      }
+    });
+
+    $('btn-confirm-admin-delete')?.addEventListener('click', async () => {
+      const pwdInput = $('input-admin-delete-password');
+      const errEl = $('admin-delete-error');
+      const enteredPwd = (pwdInput?.value || '').trim();
+      const expectedPwd = (state.config?.adminPassword || '1973').trim();
+
+      if (!enteredPwd || enteredPwd !== expectedPwd) {
+        errEl?.classList.remove('hidden');
+        pwdInput?.focus();
+        return;
+      }
+
+      errEl?.classList.add('hidden');
+      const confirmBtn = $('btn-confirm-admin-delete');
+      if (confirmBtn) confirmBtn.disabled = true;
+
+      try {
+        if (pendingDeleteContext.mode === 'BULK_DAILY') {
+          const clearOrders = Boolean($('chk-del-orders')?.checked);
+          const clearPhotos = Boolean($('chk-del-photos')?.checked);
+          if (!clearOrders && !clearPhotos) {
+            alert('กรุณาติ๊กเลือกรายการที่ต้องการลบอย่างน้อย 1 รายการ');
+            return;
+          }
+
+          const scanIds = clearPhotos ? state.labelScans.map((s) => s.id) : [];
+          await TrackerDB.deleteDailyDataFromCloud(
+            state.activeDate,
+            { clearOrders, clearLabelScans: clearPhotos },
+            scanIds
+          );
+
+          if (clearOrders) state.extraOrders = [];
+          if (clearPhotos) {
+            state.labelScans = [];
+            state.selectedScanId = '';
+          }
+
+          modal?.classList.add('hidden');
+          await refreshActiveDateData(false);
+          showToast('🗑️ ลบข้อมูลทดสอบของวันที่เลือกเรียบร้อยแล้ว!');
+        } else if (pendingDeleteContext.mode === 'SINGLE_ITEM') {
+          const p = pendingDeleteContext.payload || {};
+          if (p.scanId) {
+            state.labelScans = state.labelScans.filter((s) => s.id !== p.scanId);
+            if (state.selectedScanId === p.scanId) {
+              state.selectedScanId = state.labelScans[0]?.id || '';
+            }
+            await TrackerDB.saveLabelScansToCloud(state.activeDate, state.labelScans, state.config.staffName);
+            await TrackerDB.deleteLabelImageFromCloud(p.scanId);
+          }
+          if (p.cleanTracking || p.cleanOrderId) {
+            state.extraOrders = state.extraOrders.filter((o) => {
+              if (p.cleanTracking && o.cleanTracking === p.cleanTracking) return false;
+              if (p.cleanOrderId && o.cleanOrderId === p.cleanOrderId) return false;
+              return true;
+            });
+            await TrackerDB.saveExtraOrdersToCloud(state.activeDate, state.extraOrders, state.config.staffName);
+          }
+
+          modal?.classList.add('hidden');
+          await refreshActiveDateData(false);
+          showToast('🗑️ ลบรายการพัสดุที่เลือกเรียบร้อยแล้ว!');
+        }
+      } catch (err) {
+        alert('เกิดข้อผิดพลาดในการลบข้อมูล: ' + err.message);
+      } finally {
+        if (confirmBtn) confirmBtn.disabled = false;
+      }
+    });
+  }
+
+  function openAdminDeleteModal(mode, payload) {
+    pendingDeleteContext = { mode, payload };
+    const modal = $('modal-admin-delete');
+    const titleEl = $('modal-delete-title');
+    const descEl = $('modal-delete-desc');
+    const bulkBox = $('modal-delete-bulk-options');
+    const pwdInput = $('input-admin-delete-password');
+    const errEl = $('admin-delete-error');
+
+    if (errEl) errEl.classList.add('hidden');
+    if (pwdInput) pwdInput.value = '';
+
+    if (mode === 'BULK_DAILY') {
+      if (titleEl) titleEl.textContent = `ลบข้อมูลประจำวันที่ ${TrackerDB.formatThaiDateDisplay(state.activeDate)}`;
+      if (descEl) {
+        descEl.textContent = `เลือกประเภทข้อมูลของวันที่ ${state.activeDate} ที่ต้องการล้างออกจากระบบ (ไม่กระทบข้อมูลในระบบยิง QR เดิม)`;
+      }
+      if (bulkBox) bulkBox.classList.remove('hidden');
+      if ($('lbl-del-orders-count')) {
+        $('lbl-del-orders-count').textContent = `(${state.extraOrders.length.toLocaleString()} รายการ)`;
+      }
+      if ($('lbl-del-photos-count')) {
+        $('lbl-del-photos-count').textContent = `(${state.labelScans.length.toLocaleString()} รูป)`;
+      }
+      if ($('chk-del-orders')) $('chk-del-orders').checked = true;
+      if ($('chk-del-photos')) $('chk-del-photos').checked = true;
+    } else {
+      if (titleEl) titleEl.textContent = 'ยืนยันการลบรายการพัสดุ (เฉพาะแอดมิน)';
+      const labelTxt = payload?.cleanTracking || payload?.cleanOrderId || payload?.scanId || '';
+      if (descEl) {
+        descEl.textContent = `ต้องการลบรายการพัสดุ "${labelTxt}" ออกจากระบบตรวจสอบใบปะหน้าของวันที่ ${state.activeDate} ใช่หรือไม่?`;
+      }
+      if (bulkBox) bulkBox.classList.add('hidden');
+    }
+
+    modal?.classList.remove('hidden');
+    setTimeout(() => pwdInput?.focus(), 80);
   }
 
   async function handleLoadSampleData() {

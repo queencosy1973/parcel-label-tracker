@@ -1028,7 +1028,8 @@ ${skuHintList}
         lineChannelId: labelCfg.lineChannelId || localCfg.lineChannelId || '',
         lineChannelSecret: labelCfg.lineChannelSecret || localCfg.lineChannelSecret || '',
         lineChannelAccessToken: labelCfg.lineChannelAccessToken || localCfg.lineChannelAccessToken || '',
-        staffName: labelCfg.staffName || localCfg.staffName || 'ฝ่ายติดตามพัสดุ'
+        staffName: labelCfg.staffName || localCfg.staffName || 'ฝ่ายติดตามพัสดุ',
+        adminPassword: labelCfg.adminPassword || localCfg.adminPassword || '1973'
       };
 
       saveLocalConfig(resolved);
@@ -1246,9 +1247,67 @@ ${skuHintList}
         customUrl,
         customKey
       );
+      cachedCrossDateData.fetchedAt = 0;
       return res.ok;
     } catch (e) {
       console.warn('saveExtraOrdersToCloud error:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Deletes daily data (extra orders and/or label scans & images) for a given date.
+   * Never touches QC_PARCEL_DATA_<date> from daily-parcel-checker.
+   */
+  async function deleteDailyDataFromCloud(date, options = { clearOrders: true, clearLabelScans: true }, scanIdsToDelete = [], customUrl, customKey) {
+    const targetDate = date || getTodayString();
+    const batchesToRemove = [];
+    if (options.clearOrders) {
+      batchesToRemove.push(`QC_LABEL_ORDERS_${targetDate}`);
+    }
+    if (options.clearLabelScans) {
+      batchesToRemove.push(`QC_LABEL_SCAN_${targetDate}`);
+      if (Array.isArray(scanIdsToDelete)) {
+        scanIdsToDelete.forEach((id) => {
+          if (id) {
+            batchesToRemove.push(`QC_LABEL_IMG_${id}`);
+            memoryImageCache.delete(id);
+          }
+        });
+      }
+    }
+
+    if (batchesToRemove.length === 0) return true;
+    try {
+      const inList = batchesToRemove.map((b) => encodeURIComponent(b)).join(',');
+      const res = await supabaseRequest(
+        `production_batches?batch_id=in.(${inList})`,
+        { method: 'DELETE' },
+        customUrl,
+        customKey
+      );
+      cachedCrossDateData.fetchedAt = 0;
+      await idbSet('daily_state', targetDate, null);
+      return res.ok;
+    } catch (e) {
+      console.warn('deleteDailyDataFromCloud error:', e);
+      return false;
+    }
+  }
+
+  async function deleteLabelImageFromCloud(scanId, customUrl, customKey) {
+    if (!scanId) return false;
+    memoryImageCache.delete(scanId);
+    try {
+      const res = await supabaseRequest(
+        `production_batches?batch_id=eq.${encodeURIComponent('QC_LABEL_IMG_' + scanId)}`,
+        { method: 'DELETE' },
+        customUrl,
+        customKey
+      );
+      cachedCrossDateData.fetchedAt = 0;
+      return res.ok;
+    } catch (e) {
       return false;
     }
   }
@@ -2033,6 +2092,8 @@ ${skuHintList}
     fetchLabelImage,
     saveLabelScansToCloud,
     saveExtraOrdersToCloud,
+    deleteDailyDataFromCloud,
+    deleteLabelImageFromCloud,
     syncDailyDataFromCloud,
     recordIncomingLabelScan,
     fetchMultiDayDataFromCloud,

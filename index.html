@@ -155,6 +155,11 @@
             <i data-lucide="file-spreadsheet" class="w-4 h-4 text-emerald-600"></i>
             <span>📥 ดึงรีพอร์ต Excel</span>
           </button>
+
+          <button id="btn-open-admin-clear" class="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer" title="ลบข้อมูลทดสอบหรือล้างข้อมูลของวันนี้ (ต้องใช้รหัสผ่านแอดมิน)">
+            <i data-lucide="trash-2" class="w-4 h-4 text-rose-600"></i>
+            <span>🗑️ ลบข้อมูล (แอดมิน)</span>
+          </button>
         </div>
       </div>
 
@@ -681,6 +686,23 @@
             </div>
           </div>
 
+          <!-- Admin Delete Password Setting -->
+          <div class="space-y-2.5 pt-3 border-t border-slate-200">
+            <h3 class="font-bold text-xs uppercase tracking-wider text-rose-600 flex items-center gap-1.5">
+              <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+              <span>3. รหัสผ่านผู้ดูแลระบบสำหรับลบข้อมูล (ป้องกันพนักงานกดลบเอง)</span>
+            </h3>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+              <div>
+                <label class="block text-xs font-bold text-slate-700 mb-1">รหัสผ่านแอดมิน (Admin Password)</label>
+                <input type="password" id="cfg-admin-password" placeholder="ค่าเริ่มต้น: 1973" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono focus:outline-none focus:border-rose-500" />
+              </div>
+              <div class="text-[11px] text-slate-500 leading-relaxed pt-3">
+                🔒 ทุกครั้งที่มีการกดลบรูปใบปะหน้า ลบรายการรายชิ้น หรือล้างข้อมูลทดสอบประจำวัน ระบบจะถามรหัสผ่านนี้ก่อนเสมอ (รหัสเริ่มต้นคือ <code>1973</code>)
+              </div>
+            </div>
+          </div>
+
           <div class="pt-3 flex flex-wrap items-center justify-end gap-2.5 border-t border-slate-200">
             <button id="btn-save-settings" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-2 shadow transition cursor-pointer">
               <i data-lucide="save" class="w-4 h-4"></i>
@@ -787,6 +809,69 @@
         <div id="modal-viewer-details" class="space-y-3 text-xs">
           <!-- Populated by app.js -->
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       MODAL 3: PASSWORD-PROTECTED ADMIN DELETE MODAL
+       ========================================================================= -->
+  <div id="modal-admin-delete" class="fixed inset-0 z-50 hidden bg-slate-900/70 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border-2 border-rose-200 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+            <i data-lucide="shield-alert" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 id="modal-delete-title" class="font-bold text-slate-900 text-sm sm:text-base">ยืนยันการลบข้อมูล (เฉพาะผู้ดูแลระบบ)</h3>
+            <p class="text-[11px] text-slate-500">ป้องกันพนักงานกดลบข้อมูลโดยไม่ได้รับอนุญาต</p>
+          </div>
+        </div>
+        <button id="btn-close-delete-modal" class="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 cursor-pointer">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Description / Options for Bulk or Single Delete -->
+      <div id="modal-delete-desc" class="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-900 leading-relaxed">
+        กรุณาเลือกรายการที่ต้องการลบและกรอกรหัสผ่านแอดมิน
+      </div>
+
+      <div id="modal-delete-bulk-options" class="space-y-2 text-xs">
+        <label class="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
+          <input type="checkbox" id="chk-del-orders" checked class="rounded text-rose-600 focus:ring-rose-500" />
+          <span>ลบไฟล์คำสั่งซื้อที่อิมพอร์ตในหน้านี้ของวันที่เลือก (<strong id="lbl-del-orders-count">0</strong> รายการ)</span>
+        </label>
+        <label class="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
+          <input type="checkbox" id="chk-del-photos" checked class="rounded text-rose-600 focus:ring-rose-500" />
+          <span>ลบรูปถ่ายใบปะหน้าพัสดุทั้งหมดของวันที่เลือก (<strong id="lbl-del-photos-count">0</strong> รูป)</span>
+        </label>
+        <div class="text-[11px] text-slate-400 px-1">
+          * ปลอดภัย 100%: การลบนี้จะไม่กระทบข้อมูลในระบบยิงบาร์โค้ด <code>daily-parcel-checker</code>
+        </div>
+      </div>
+
+      <!-- Password Input -->
+      <div>
+        <label class="block text-xs font-bold text-slate-800 mb-1.5 flex items-center gap-1.5">
+          <i data-lucide="key-round" class="w-3.5 h-3.5 text-rose-600"></i>
+          <span>ใส่รหัสผ่านผู้ดูแลระบบ (Admin Password) เพื่อยืนยัน:</span>
+        </label>
+        <input type="password" id="input-admin-delete-password" placeholder="กรอกรหัสผ่านแอดมิน..." class="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 font-mono text-sm focus:outline-none focus:border-rose-600" />
+        <div id="admin-delete-error" class="hidden mt-1.5 text-xs font-bold text-rose-600 flex items-center gap-1">
+          <span>❌ รหัสผ่านไม่ถูกต้อง! กรุณาลองใหม่อีกครั้ง</span>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button id="btn-cancel-delete-modal" class="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer">
+          ยกเลิก
+        </button>
+        <button id="btn-confirm-admin-delete" class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 shadow transition cursor-pointer">
+          <i data-lucide="trash-2" class="w-4 h-4"></i>
+          <span>ยืนยันการลบข้อมูล</span>
+        </button>
       </div>
     </div>
   </div>
