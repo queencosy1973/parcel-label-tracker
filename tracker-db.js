@@ -568,9 +568,10 @@
     });
 
     // 6. Also check if there are QR scans that have neither an Order nor a Label Photo yet
-    //    (e.g., warehouse scanned QR before importing orders) -> show as QR_ONLY so nothing is hidden!
+    //    (e.g., warehouse scanned QR on this target date before importing orders) -> show as QR_ONLY so nothing is hidden!
     const existingTrackingsInReconciled = new Set(reconciledItems.map((i) => i.cleanTracking).filter(Boolean));
     safeQrScans.forEach((qs) => {
+      if (qs.isCrossDateScan) return; // Cross-date scans are only used to match against orders/photos of this view
       const trk = normalizeTracking(qs.cleanTracking || qs.trackingId || '');
       if (!trk || existingTrackingsInReconciled.has(trk)) return;
       existingTrackingsInReconciled.add(trk);
@@ -613,6 +614,21 @@
         checkedBy: '',
         checkedAt: ''
       });
+    });
+
+    // Sort so items with Label Photos and/or QR Scans appear at the very top of the dashboard
+    const statusPriority = {
+      VERIFIED_ALL: 1,
+      PHOTO_ONLY: 2,
+      UNMATCHED_PHOTO: 3,
+      QR_ONLY: 4,
+      ORDER_PENDING: 5
+    };
+    reconciledItems.sort((a, b) => {
+      const pa = statusPriority[a.threeWayStatus] || 9;
+      const pb = statusPriority[b.threeWayStatus] || 9;
+      if (pa !== pb) return pa - pb;
+      return 0;
     });
 
     // 7. Compute Summary KPIs
@@ -1237,9 +1253,73 @@ ${skuHintList}
     }
   }
 
+  // Cache for cross-date QR scans & label scans so repeated syncs are instant (< 0.2s)
+  let cachedCrossDateData = {
+    fetchedAt: 0,
+    qrScans: [],
+    labelScans: []
+  };
+
+  async function fetchCrossDateScansFromCloud(customUrl, customKey) {
+    const now = Date.now();
+    if (now - cachedCrossDateData.fetchedAt < 12000 && cachedCrossDateData.qrScans.length > 0) {
+      return cachedCrossDateData;
+    }
+    try {
+      const query = 'production_batches?or=(batch_id.like.QC_PARCEL_DATA_*,batch_id.like.QC_LABEL_SCAN_*)&select=batch_id,items_json,updated_at&order=updated_at.desc&limit=35';
+      const res = await supabaseRequest(query, { method: 'GET' }, customUrl, customKey);
+      if (!res.ok) return cachedCrossDateData;
+      const rows = await res.json();
+      if (!Array.isArray(rows)) return cachedCrossDateData;
+
+      const allQrScans = [];
+      const allLabelScans = [];
+      const seenQrTrackings = new Set();
+
+      for (const row of rows) {
+        const bid = String(row.batch_id || '');
+        const parsed = typeof row.items_json === 'string'
+          ? JSON.parse(row.items_json || '{}')
+          : (row.items_json || {});
+
+        if (bid.startsWith('QC_PARCEL_DATA_')) {
+          const batchDate = bid.replace('QC_PARCEL_DATA_', '');
+          const scans = Array.isArray(parsed.scans) ? parsed.scans : [];
+          for (const s of scans) {
+            if (!s || s.isBlocked) continue;
+            const trk = normalizeTracking(s.cleanTracking || s.trackingId || '');
+            if (trk && !seenQrTrackings.has(trk)) {
+              seenQrTrackings.add(trk);
+              allQrScans.push(Object.assign({}, s, {
+                cleanTracking: trk,
+                scanDate: s.scanDate || batchDate
+              }));
+            }
+          }
+        } else if (bid.startsWith('QC_LABEL_SCAN_')) {
+          const scans = Array.isArray(parsed.scans) ? parsed.scans : [];
+          for (const ls of scans) {
+            if (ls) allLabelScans.push(ls);
+          }
+        }
+      }
+
+      cachedCrossDateData = {
+        fetchedAt: now,
+        qrScans: allQrScans,
+        labelScans: deduplicateLabelScans(allLabelScans)
+      };
+      return cachedCrossDateData;
+    } catch (e) {
+      console.warn('fetchCrossDateScansFromCloud warning:', e);
+      return cachedCrossDateData;
+    }
+  }
+
   /**
-   * Fetches all 3 cloud rows for a given date in a single fast PostgREST query:
+   * Fetches all 3 cloud rows for a given date AND cross-date QR scans from daily-parcel-checker:
    * - QC_PARCEL_DATA_<date>   (Read-Only from daily-parcel-checker: orders + QR scans)
+   * - QC_PARCEL_DATA_*        (Cross-date QR scans so orders from 30/10 scanned on 31/10 or 02/11 always match!)
    * - QC_LABEL_ORDERS_<date>  (Orders imported directly into parcel-label-tracker)
    * - QC_LABEL_SCAN_<date>    (Label photo scans + follow-up tracking statuses)
    */
@@ -1250,13 +1330,16 @@ ${skuHintList}
     const bLabelScan = `QC_LABEL_SCAN_${targetDate}`;
 
     let qrSystemOrders = [];
-    let qrScans = [];
+    let sameDateQrScans = [];
     let extraOrders = [];
     let labelScans = [];
 
     try {
       const query = `production_batches?batch_id=in.(${encodeURIComponent(bParcel)},${encodeURIComponent(bLabelOrders)},${encodeURIComponent(bLabelScan)})&select=batch_id,items_json,updated_at,imported_by`;
-      const res = await supabaseRequest(query, { method: 'GET' }, customUrl, customKey);
+      const [res, crossData] = await Promise.all([
+        supabaseRequest(query, { method: 'GET' }, customUrl, customKey),
+        fetchCrossDateScansFromCloud(customUrl, customKey)
+      ]);
 
       if (res.ok) {
         const rows = await res.json();
@@ -1268,7 +1351,7 @@ ${skuHintList}
 
             if (row.batch_id === bParcel) {
               qrSystemOrders = Array.isArray(parsed.orders) ? parsed.orders : [];
-              qrScans = Array.isArray(parsed.scans) ? parsed.scans : [];
+              sameDateQrScans = Array.isArray(parsed.scans) ? parsed.scans : [];
             } else if (row.batch_id === bLabelOrders) {
               extraOrders = Array.isArray(parsed.orders) ? parsed.orders : [];
             } else if (row.batch_id === bLabelScan) {
@@ -1277,26 +1360,56 @@ ${skuHintList}
           }
         }
       }
+
+      const mergedOrders = deduplicateOrderArray([...qrSystemOrders, ...extraOrders]);
+
+      // Also include any cross-date label photos that match an order in mergedOrders
+      const orderTrackings = new Set(mergedOrders.map((o) => o.cleanTracking).filter(Boolean));
+      const orderIds = new Set(mergedOrders.map((o) => normalizeOrderId(o.orderId)).filter(Boolean));
+      const crossMatchedLabels = (crossData.labelScans || []).filter((ls) =>
+        (ls.cleanTracking && orderTrackings.has(ls.cleanTracking)) ||
+        (ls.cleanOrderId && orderIds.has(ls.cleanOrderId))
+      );
+      const cleanLabelScans = deduplicateLabelScans([...crossMatchedLabels, ...labelScans]);
+
+      // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker
+      const sameDateQrTrackings = new Set(
+        sameDateQrScans.map((s) => normalizeTracking(s.cleanTracking || s.trackingId || '')).filter(Boolean)
+      );
+      const crossQrScans = (crossData.qrScans || [])
+        .filter((s) => !sameDateQrTrackings.has(s.cleanTracking))
+        .map((s) => Object.assign({}, s, { isCrossDateScan: true }));
+
+      const combinedQrScans = [...sameDateQrScans, ...crossQrScans];
+      const reconciled = reconcileThreeWayStatus(mergedOrders, combinedQrScans, cleanLabelScans, targetDate);
+
+      const result = {
+        date: targetDate,
+        qrSystemOrders,
+        extraOrders,
+        orders: mergedOrders,
+        qrScans: combinedQrScans,
+        labelScans: cleanLabelScans,
+        reconciled
+      };
+
+      await idbSet('daily_state', targetDate, result);
+      return result;
     } catch (e) {
       console.warn('syncDailyDataFromCloud warning:', e);
+      const mergedOrders = deduplicateOrderArray([...qrSystemOrders, ...extraOrders]);
+      const cleanLabelScans = deduplicateLabelScans(labelScans);
+      const reconciled = reconcileThreeWayStatus(mergedOrders, sameDateQrScans, cleanLabelScans, targetDate);
+      return {
+        date: targetDate,
+        qrSystemOrders,
+        extraOrders,
+        orders: mergedOrders,
+        qrScans: sameDateQrScans,
+        labelScans: cleanLabelScans,
+        reconciled
+      };
     }
-
-    const mergedOrders = deduplicateOrderArray([...qrSystemOrders, ...extraOrders]);
-    const cleanLabelScans = deduplicateLabelScans(labelScans);
-    const reconciled = reconcileThreeWayStatus(mergedOrders, qrScans, cleanLabelScans, targetDate);
-
-    const result = {
-      date: targetDate,
-      qrSystemOrders,
-      extraOrders,
-      orders: mergedOrders,
-      qrScans,
-      labelScans: cleanLabelScans,
-      reconciled
-    };
-
-    await idbSet('daily_state', targetDate, result);
-    return result;
   }
 
   /**
