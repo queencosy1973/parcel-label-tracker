@@ -2081,15 +2081,21 @@
       $('modal-viewer-subtitle').textContent = `Order ID: ${d.orderId || '-'} • วันที่ส่งออก: ${TrackerDB.formatThaiDateDisplay(d.shipDate || state.activeDate)}`;
     }
 
-    imgEl.src = scan?.imageDataUrl || '';
+    const cachedImg = scan?.imageDataUrl || '';
+    if (cachedImg) {
+      imgEl.src = cachedImg;
+    } else {
+      imgEl.removeAttribute('src');
+    }
     modal.classList.remove('hidden');
 
-    if (!imgEl.src && scanId) {
-      const cloudImg = await TrackerDB.fetchLabelImage(scanId);
-      if (cloudImg) {
-        imgEl.src = cloudImg;
-        if (scan) scan.imageDataUrl = cloudImg;
-      }
+    if (!cachedImg && scanId) {
+      TrackerDB.fetchLabelImage(scanId).then((cloudImg) => {
+        if (cloudImg) {
+          imgEl.src = cloudImg;
+          if (scan) scan.imageDataUrl = cloudImg;
+        }
+      });
     }
 
     const isUnmatched = d.threeWayStatus === 'UNMATCHED_PHOTO' || !d.hasOrder;
