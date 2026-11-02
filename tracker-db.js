@@ -372,15 +372,38 @@
       if (ord && !qrByOrderId.has(ord)) qrByOrderId.set(ord, qs);
     });
 
-    // 2. Index Label Photo Scans by cleanTracking and by cleanOrderId
+    // 2. Index Label Photo Scans by cleanTracking, cleanOrderId, and 8-digit tails (for blurry 1-digit AI misses)
     const labelByTracking = new Map();
     const labelByOrderId = new Map();
+    const labelByOrderTail = new Map();
+    const labelByTrackingTail = new Map();
     cleanLabels.forEach((ls) => {
       const trk = normalizeTracking(ls.cleanTracking || ls.trackingId || '');
       const ord = normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
       if (trk && !labelByTracking.has(trk)) labelByTracking.set(trk, ls);
       if (ord && !labelByOrderId.has(ord)) labelByOrderId.set(ord, ls);
+      if (ord && ord.length >= 8) {
+        const tail = ord.slice(-8);
+        if (!labelByOrderTail.has(tail)) labelByOrderTail.set(tail, ls);
+      }
+      if (trk && trk.length >= 10) {
+        const tail = trk.slice(-8);
+        if (!labelByTrackingTail.has(tail)) labelByTrackingTail.set(tail, ls);
+      }
     });
+
+    // Helper: check if two strings of equal length (>= 10) differ by at most 1 character
+    const isOneCharDiff = (a, b) => {
+      if (!a || !b || a.length !== b.length || a.length < 10) return false;
+      let diffs = 0;
+      for (let i = 0; i < a.length; i++) {
+        if (a[i] !== b[i]) {
+          diffs++;
+          if (diffs > 1) return false;
+        }
+      }
+      return diffs === 1;
+    };
 
     // 3. Consolidate orders by parcel (Tracking ID or Order ID) so 1 parcel = 1 row in dashboard
     //    (If an order has multiple SKUs in the same parcel box, combine SKU text & sum qty)
@@ -447,7 +470,20 @@
       const ord = group.cleanOrderId;
 
       const qrScan = (trk && qrByTracking.get(trk)) || (ord && qrByOrderId.get(ord)) || null;
-      const labelScan = (trk && labelByTracking.get(trk)) || (ord && labelByOrderId.get(ord)) || null;
+      let labelScan = (trk && labelByTracking.get(trk)) || (ord && labelByOrderId.get(ord)) || null;
+
+      // Fallback fuzzy match if exact match failed due to 1 blurry digit in AI OCR
+      if (!labelScan) {
+        const ordTailCandidate = (ord && ord.length >= 8) ? labelByOrderTail.get(ord.slice(-8)) : null;
+        if (ordTailCandidate && !usedLabelIds.has(ordTailCandidate.id)) {
+          labelScan = ordTailCandidate;
+        } else if (trk && trk.length >= 10) {
+          const oneOffCandidate = cleanLabels.find(
+            (ls) => !usedLabelIds.has(ls.id) && isOneCharDiff(trk, ls.cleanTracking)
+          );
+          if (oneOffCandidate) labelScan = oneOffCandidate;
+        }
+      }
 
       if (labelScan && labelScan.id) {
         usedLabelIds.add(labelScan.id);

@@ -520,7 +520,9 @@
             <div class="flex items-center justify-center gap-1.5">
               ${
                 item.hasPhoto
-                  ? `<button data-view-scan="${escapeHtml(item.labelScanId)}" class="btn-view-photo px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold cursor-pointer transition">ตรวจคู่รูป</button>`
+                  ? item.threeWayStatus === 'UNMATCHED_PHOTO'
+                    ? `<button data-view-scan="${escapeHtml(item.labelScanId)}" class="btn-view-photo px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-bold cursor-pointer transition flex items-center gap-1 shadow-xs"><i data-lucide="edit-3" class="w-3 h-3"></i> คีย์ข้อมูล/จับคู่</button>`
+                    : `<button data-view-scan="${escapeHtml(item.labelScanId)}" class="btn-view-photo px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold cursor-pointer transition">ตรวจคู่รูป/แก้ไข</button>`
                   : `<button data-upload-for="${escapeHtml(item.trackingId)}" class="btn-jump-upload px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-bold cursor-pointer transition">+ อัปโหลดรูป</button>`
               }
               <button data-del-tracking="${escapeHtml(item.cleanTracking)}" data-del-order="${escapeHtml(item.cleanOrderId)}" data-del-scan="${escapeHtml(item.labelScanId || '')}" title="ลบรายการนี้ (ต้องใช้รหัสผ่านแอดมิน)" class="btn-delete-row-item p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 cursor-pointer transition">
@@ -2073,7 +2075,7 @@
 
     const d = item || scan;
     if ($('modal-viewer-title')) {
-      $('modal-viewer-title').textContent = `ใบปะหน้าพัสดุ: ${d.trackingId || '-'} (${d.carrier || '-'})`;
+      $('modal-viewer-title').textContent = `ตรวจคู่รูป & คีย์แก้ไขข้อมูลใบปะหน้า: ${d.trackingId || '-'} (${d.carrier || '-'})`;
     }
     if ($('modal-viewer-subtitle')) {
       $('modal-viewer-subtitle').textContent = `Order ID: ${d.orderId || '-'} • วันที่ส่งออก: ${TrackerDB.formatThaiDateDisplay(d.shipDate || state.activeDate)}`;
@@ -2084,16 +2086,26 @@
 
     if (!imgEl.src && scanId) {
       const cloudImg = await TrackerDB.fetchLabelImage(scanId);
-      if (cloudImg) imgEl.src = cloudImg;
+      if (cloudImg) {
+        imgEl.src = cloudImg;
+        if (scan) scan.imageDataUrl = cloudImg;
+      }
     }
 
-    const stMeta = TrackerDB.FOLLOW_UP_STATUSES[d.followUpStatus || 'PENDING_PICKUP'] || TrackerDB.FOLLOW_UP_STATUSES.PENDING_PICKUP;
+    const isUnmatched = d.threeWayStatus === 'UNMATCHED_PHOTO' || !d.hasOrder;
+    const rawTrkVal = (d.trackingId && !String(d.trackingId).includes('ไม่สามารถ')) ? d.trackingId : '';
+    const rawOrdVal = (d.orderId && !String(d.orderId).includes('ไม่สามารถ') && d.orderId !== '-') ? d.orderId : '';
+    const rawSkuVal = (d.sku && !String(d.sku).includes('ไม่สามารถ') && d.sku !== 'รอนำเข้าข้อมูลออเดอร์') ? d.sku : '';
+    const rawCustVal = (d.customerName && !String(d.customerName).includes('ไม่สามารถ')) ? d.customerName : '';
+    const rawProvVal = (d.province && !String(d.province).includes('ไม่สามารถ')) ? d.province : '';
 
     detailsEl.innerHTML = `
-      <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-        <div class="font-bold text-slate-900 text-sm">ผลการรีเช็ค 3 ทาง (3-Way Verification)</div>
-        <div>${getThreeWayBadgeHtml(d.threeWayStatus || 'VERIFIED_ALL')}</div>
-        <div class="grid grid-cols-2 gap-2 pt-2 text-xs">
+      <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-slate-900 text-xs sm:text-sm">สถานะการจับคู่ปัจจุบัน</span>
+          <div>${getThreeWayBadgeHtml(d.threeWayStatus || 'VERIFIED_ALL')}</div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 pt-1 text-xs">
           <div class="p-2 rounded-lg bg-white border border-slate-200">
             <span class="text-slate-400 block text-[10px]">ด่านที่ 1: ระบบยิง QR</span>
             <span class="font-bold ${d.hasQr ? 'text-emerald-700' : 'text-rose-600'}">
@@ -2109,16 +2121,205 @@
         </div>
       </div>
 
-      <div class="p-3.5 rounded-xl bg-white border border-slate-200 space-y-1.5">
-        <div><span class="text-slate-400">เลขพัสดุ (Tracking):</span> <strong class="font-mono text-slate-900">${escapeHtml(d.trackingId || '-')}</strong></div>
-        <div><span class="text-slate-400">หมายเลขคำสั่งซื้อ (Order ID):</span> <strong class="font-mono text-slate-900">${escapeHtml(d.orderId || '-')}</strong></div>
-        <div><span class="text-slate-400">ขนส่ง / ช่องทาง:</span> <strong>${escapeHtml(d.carrier || '-')} (${escapeHtml(d.platform || '-')})</strong></div>
-        <div><span class="text-slate-400">สินค้าในพัสดุ (SKU):</span> <strong class="text-indigo-700">${escapeHtml(d.sku || '-')} (x${d.qty || 1} ชิ้น)</strong></div>
-        <div><span class="text-slate-400">ผู้รับ / จังหวัดปลายทาง:</span> <strong>${escapeHtml([d.customerName, d.province].filter(Boolean).join(' • จ.') || '-')}</strong></div>
-        <div><span class="text-slate-400">สถานะติดตามขนส่ง:</span> <strong>${escapeHtml(stMeta.label)}</strong> ${d.currentHub ? `(${escapeHtml(d.currentHub)})` : ''}</div>
-        ${d.followUpNote ? `<div><span class="text-slate-400">หมายเหตุติดตาม:</span> <span>${escapeHtml(d.followUpNote)}</span></div>` : ''}
+      <!-- Quick Search from Uploaded Orders -->
+      <div class="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2">
+        <label class="font-bold text-indigo-950 text-xs flex items-center gap-1.5">
+          <i data-lucide="search" class="w-4 h-4 text-indigo-600"></i>
+          <span>ตัวช่วยค้นหาและดึงข้อมูลจากไฟล์คำสั่งซื้อมาสวมทับอัตโนมัติ:</span>
+        </label>
+        <input type="text" id="modal-order-search-input" placeholder="พิมพ์เลขท้าย 4 ตัวของ Tracking / Order ID หรือชื่อรุ่น / จังหวัด..." class="w-full px-3 py-2 rounded-xl border border-indigo-300 bg-white text-xs focus:outline-none focus:border-indigo-600" />
+        <div id="modal-order-search-results" class="max-h-32 overflow-y-auto space-y-1 hidden"></div>
+      </div>
+
+      <!-- Manual Edit / Key-in Form -->
+      <div class="p-3.5 rounded-xl bg-white border-2 border-slate-200 space-y-2.5">
+        <div class="font-bold text-slate-900 text-xs sm:text-sm flex items-center gap-1.5 border-b border-slate-100 pb-2">
+          <i data-lucide="edit-3" class="w-4 h-4 text-purple-600"></i>
+          <span>คีย์ข้อมูลเอง / แก้ไขข้อมูลใบปะหน้า (จับคู่ได้ทั้ง Tracking ID และ Order ID)</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div>
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">เลขพัสดุ (Tracking ID)</label>
+            <input type="text" id="modal-edit-trk" value="${escapeHtml(rawTrkVal)}" placeholder="เช่น 66771012141848" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+          <div>
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">หมายเลขคำสั่งซื้อ (Order ID)</label>
+            <input type="text" id="modal-edit-ord" value="${escapeHtml(rawOrdVal)}" placeholder="เช่น 586666932346193355" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div class="sm:col-span-2">
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">รายการสินค้า (SKU / รุ่น-สีโซฟา)</label>
+            <input type="text" id="modal-edit-sku" value="${escapeHtml(rawSkuVal)}" placeholder="เช่น Qs-โซฟาเบดปรับนอน-rcs-เทา" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+          <div>
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">จำนวน (ชิ้น)</label>
+            <input type="number" id="modal-edit-qty" min="1" value="${d.qty || 1}" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 font-mono font-bold text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div>
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">ชื่อลูกค้า / ผู้รับ</label>
+            <input type="text" id="modal-edit-cust" value="${escapeHtml(rawCustVal)}" placeholder="ระบุชื่อลูกค้า..." class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+          <div>
+            <label class="text-[11px] font-bold text-slate-600 block mb-1">จังหวัดปลายทาง</label>
+            <input type="text" id="modal-edit-prov" value="${escapeHtml(rawProvVal)}" placeholder="เช่น กรุงเทพมหานคร, ชลบุรี" class="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-900 text-xs focus:outline-none focus:border-indigo-600" />
+          </div>
+        </div>
+
+        <label class="flex items-start gap-2 p-2.5 rounded-xl bg-amber-50 border border-amber-200 cursor-pointer">
+          <input type="checkbox" id="modal-chk-create-order" ${isUnmatched ? 'checked' : ''} class="mt-0.5 rounded text-indigo-600" />
+          <span class="text-[11px] text-amber-950 leading-snug">
+            <strong>เพิ่มเข้าในตารางคำสั่งซื้ออัตโนมัติ (กรณีไม่มีในไฟล์ Excel ที่อัปโหลด)</strong><br/>
+            ช่วยให้รายการที่คีย์นี้เปลี่ยนสถานะจาก "ไม่พบในออเดอร์" เป็นจับคู่คำสั่งซื้อสำเร็จทันที
+          </span>
+        </label>
+
+        <div class="pt-1 flex items-center justify-end gap-2">
+          <button type="button" id="btn-modal-save-manual-edit" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm cursor-pointer transition">
+            <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+            <span>💾 บันทึกข้อมูล & จับคู่ออเดอร์ทันที</span>
+          </button>
+        </div>
       </div>
     `;
+
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    // Wire up quick order search inside modal
+    const searchInput = $('modal-order-search-input');
+    const resultsBox = $('modal-order-search-results');
+    const renderOrderSuggestions = (queryText) => {
+      if (!resultsBox) return;
+      const q = (queryText || '').trim().toLowerCase();
+      if (!q) {
+        resultsBox.classList.add('hidden');
+        return;
+      }
+      const matches = (state.orders || []).filter((o) =>
+        (o.cleanTracking && o.cleanTracking.toLowerCase().includes(q)) ||
+        (o.orderId && String(o.orderId).toLowerCase().includes(q)) ||
+        (o.sku && String(o.sku).toLowerCase().includes(q)) ||
+        (o.customerName && String(o.customerName).toLowerCase().includes(q)) ||
+        (o.province && String(o.province).toLowerCase().includes(q))
+      ).slice(0, 8);
+
+      if (matches.length === 0) {
+        resultsBox.innerHTML = `<div class="p-2 text-[11px] text-slate-500 bg-white rounded-lg border border-slate-200">ไม่พบออเดอร์ที่ตรงกับ "${escapeHtml(queryText)}" ในไฟล์ของวันนี้ (คุณสามารถพิมพ์คีย์ข้อมูลเองด้านล่างได้เลย)</div>`;
+        resultsBox.classList.remove('hidden');
+        return;
+      }
+
+      resultsBox.innerHTML = matches.map((m, idx) => `
+        <button type="button" data-pick-idx="${idx}" class="btn-pick-order-match w-full text-left p-2 rounded-lg bg-white hover:bg-indigo-50 border border-indigo-200 transition flex items-center justify-between gap-2 cursor-pointer">
+          <div class="truncate">
+            <div class="font-mono font-bold text-slate-900 text-[11px]">TRK: ${escapeHtml(m.cleanTracking || '-')} | ORD: ${escapeHtml(m.orderId || '-')}</div>
+            <div class="text-[10px] text-slate-600 truncate">${escapeHtml(m.sku || '-')} • ${escapeHtml(m.customerName || '')} ${escapeHtml(m.province || '')}</div>
+          </div>
+          <span class="px-2 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-bold shrink-0">เลือกใช้ออเดอร์นี้</span>
+        </button>
+      `).join('');
+      resultsBox.classList.remove('hidden');
+
+      resultsBox.querySelectorAll('.btn-pick-order-match').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const picked = matches[parseInt(btn.dataset.pickIdx, 10)];
+          if (!picked) return;
+          if ($('modal-edit-trk')) $('modal-edit-trk').value = picked.cleanTracking || picked.trackingId || '';
+          if ($('modal-edit-ord')) $('modal-edit-ord').value = picked.orderId || '';
+          if ($('modal-edit-sku')) $('modal-edit-sku').value = picked.sku || '';
+          if ($('modal-edit-qty')) $('modal-edit-qty').value = picked.qty || 1;
+          if ($('modal-edit-cust')) $('modal-edit-cust').value = picked.customerName || '';
+          if ($('modal-edit-prov')) $('modal-edit-prov').value = picked.province || '';
+          resultsBox.classList.add('hidden');
+          showToast('✨ ดึงข้อมูลจากคำสั่งซื้อมาใส่ฟอร์มเรียบร้อย กดปุ่มบันทึกได้เลยครับ!');
+        });
+      });
+    };
+
+    searchInput?.addEventListener('input', (e) => {
+      renderOrderSuggestions(e.target.value);
+    });
+
+    // Wire up Save button inside modal
+    $('btn-modal-save-manual-edit')?.addEventListener('click', async () => {
+      const newTrk = TrackerDB.normalizeTracking($('modal-edit-trk')?.value || '');
+      const newOrd = TrackerDB.normalizeOrderId($('modal-edit-ord')?.value || '');
+      const newSku = ($('modal-edit-sku')?.value || '').trim();
+      const newQty = parseInt($('modal-edit-qty')?.value, 10) || 1;
+      const newCust = ($('modal-edit-cust')?.value || '').trim();
+      const newProv = ($('modal-edit-prov')?.value || '').trim();
+      const shouldCreateOrderIfMissing = Boolean($('modal-chk-create-order')?.checked);
+
+      if (!newTrk && !newOrd) {
+        alert('กรุณากรอก เลขพัสดุ (Tracking ID) หรือ หมายเลขคำสั่งซื้อ (Order ID) อย่างน้อย 1 ช่องครับ');
+        return;
+      }
+
+      // Check if an order in state.orders matches either Tracking ID or Order ID
+      const matchedExistingOrder = (state.orders || []).find(
+        (o) =>
+          (newTrk && o.cleanTracking === newTrk) ||
+          (newOrd && TrackerDB.normalizeOrderId(o.orderId) === newOrd)
+      );
+
+      const finalTrk = newTrk || (matchedExistingOrder ? matchedExistingOrder.cleanTracking : '');
+      const finalOrd = newOrd || (matchedExistingOrder ? TrackerDB.normalizeOrderId(matchedExistingOrder.orderId) : '');
+      const finalSku = newSku || (matchedExistingOrder ? matchedExistingOrder.sku : 'ไม่ระบุ SKU');
+      const finalCust = newCust || (matchedExistingOrder ? matchedExistingOrder.customerName : '');
+      const finalProv = newProv || (matchedExistingOrder ? matchedExistingOrder.province : '');
+      const finalCarrier = TrackerDB.detectCarrier(finalTrk, d.carrier);
+      const finalPlatform = TrackerDB.detectPlatform(finalOrd, d.platform, finalCarrier);
+
+      const scanIdx = state.labelScans.findIndex((s) => s.id === scanId);
+      if (scanIdx !== -1) {
+        state.labelScans[scanIdx] = Object.assign({}, state.labelScans[scanIdx], {
+          trackingId: finalTrk,
+          cleanTracking: finalTrk,
+          orderId: finalOrd,
+          cleanOrderId: finalOrd,
+          sku: finalSku,
+          productName: finalSku,
+          qty: newQty,
+          customerName: finalCust,
+          province: finalProv,
+          carrier: finalCarrier,
+          platform: finalPlatform,
+          confidence: 'HIGH',
+          updatedAt: new Date().toISOString()
+        });
+        await TrackerDB.saveLabelScansToCloud(state.activeDate, state.labelScans, state.config.staffName);
+      }
+
+      if (!matchedExistingOrder && shouldCreateOrderIfMissing) {
+        state.extraOrders = TrackerDB.deduplicateOrderArray([
+          ...state.extraOrders,
+          {
+            id: `ORD-MAN-${Date.now()}`,
+            shipDate: state.activeDate,
+            orderId: finalOrd,
+            trackingId: finalTrk,
+            cleanTracking: finalTrk,
+            sku: finalSku,
+            qty: newQty,
+            carrier: finalCarrier,
+            platform: finalPlatform,
+            customerName: finalCust,
+            province: finalProv
+          }
+        ]);
+        await TrackerDB.saveExtraOrdersToCloud(state.activeDate, state.extraOrders, state.config.staffName);
+      }
+
+      modal.classList.add('hidden');
+      recomputeLocalReconciliation();
+      renderAll();
+      showToast('✅ บันทึกข้อมูลใบปะหน้าและจับคู่คำสั่งซื้อสำเร็จเรียบร้อย!');
+    });
   }
 
   function exportDailyReportExcel(items, fileSuffix) {
