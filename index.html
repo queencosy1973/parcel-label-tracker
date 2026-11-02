@@ -849,14 +849,14 @@
       <div id="modal-delete-bulk-options" class="space-y-2 text-xs">
         <label class="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
           <input type="checkbox" id="chk-del-orders" checked class="rounded text-rose-600 focus:ring-rose-500" />
-          <span>ลบไฟล์คำสั่งซื้อที่อิมพอร์ตในหน้านี้ของวันที่เลือก (<strong id="lbl-del-orders-count">0</strong> รายการ)</span>
+          <span>ลบเฉพาะไฟล์คำสั่งซื้อที่อิมพอร์ตในหน้านี้ (<strong id="lbl-del-orders-count">0</strong> รายการ)</span>
         </label>
         <label class="flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
-          <input type="checkbox" id="chk-del-photos" checked class="rounded text-rose-600 focus:ring-rose-500" />
-          <span>ลบรูปถ่ายใบปะหน้าพัสดุทั้งหมดของวันที่เลือก (<strong id="lbl-del-photos-count">0</strong> รูป)</span>
+          <input type="checkbox" id="chk-del-photos" class="rounded text-rose-600 focus:ring-rose-500" />
+          <span>ลบรูปถ่ายใบปะหน้าพัสดุของวันที่เลือก (<strong id="lbl-del-photos-count">0</strong> รูป)</span>
         </label>
-        <div class="text-[11px] text-slate-400 px-1">
-          * ปลอดภัย 100%: การลบนี้จะไม่กระทบข้อมูลในระบบยิงบาร์โค้ด <code>daily-parcel-checker</code>
+        <div class="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">
+          🔒 <strong>ปลอดภัย 100%:</strong> ระบบจะไม่ไปยุ่งหรือลบข้อมูล QR ที่ยิงสแกน และคำสั่งซื้อในเว็บ <code>daily-parcel-checker</code> เด็ดขาด
         </div>
       </div>
 

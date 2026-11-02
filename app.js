@@ -1520,13 +1520,13 @@
       }
       if (bulkBox) bulkBox.classList.remove('hidden');
       if ($('lbl-del-orders-count')) {
-        $('lbl-del-orders-count').textContent = `(${state.extraOrders.length.toLocaleString()} รายการ)`;
+        $('lbl-del-orders-count').textContent = state.extraOrders.length.toLocaleString();
       }
       if ($('lbl-del-photos-count')) {
-        $('lbl-del-photos-count').textContent = `(${state.labelScans.length.toLocaleString()} รูป)`;
+        $('lbl-del-photos-count').textContent = state.labelScans.length.toLocaleString();
       }
       if ($('chk-del-orders')) $('chk-del-orders').checked = true;
-      if ($('chk-del-photos')) $('chk-del-photos').checked = true;
+      if ($('chk-del-photos')) $('chk-del-photos').checked = false;
     } else {
       if (titleEl) titleEl.textContent = 'ยืนยันการลบรายการพัสดุ (เฉพาะแอดมิน)';
       const labelTxt = payload?.cleanTracking || payload?.cleanOrderId || payload?.scanId || '';
