@@ -156,7 +156,7 @@
   }
 
   function recomputeLocalReconciliation() {
-    state.orders = TrackerDB.deduplicateOrderArray([...state.qrSystemOrders, ...state.extraOrders]);
+    state.orders = TrackerDB.deduplicateOrderArray(state.extraOrders);
     state.labelScans = TrackerDB.deduplicateLabelScans(state.labelScans);
     state.reconciled = TrackerDB.reconcileThreeWayStatus(
       state.orders,
@@ -1366,6 +1366,18 @@
     const modal = $('modal-import-orders');
     $('btn-open-import-orders')?.addEventListener('click', () => modal?.classList.remove('hidden'));
     $('btn-close-import-modal')?.addEventListener('click', () => modal?.classList.add('hidden'));
+
+    $('btn-pull-orders-from-qr')?.addEventListener('click', async () => {
+      if (!Array.isArray(state.qrSystemOrders) || state.qrSystemOrders.length === 0) {
+        alert(`ไม่พบรายการคำสั่งซื้อในระบบยิง QR ของวันที่ ${state.activeDate}`);
+        return;
+      }
+      state.extraOrders = TrackerDB.deduplicateOrderArray([...state.extraOrders, ...state.qrSystemOrders]);
+      await TrackerDB.saveExtraOrdersToCloud(state.activeDate, state.extraOrders, state.config.staffName);
+      modal?.classList.add('hidden');
+      await refreshActiveDateData(false);
+      showToast(`📥 ดึงคำสั่งซื้อจากระบบยิง QR สำเร็จ ${state.qrSystemOrders.length.toLocaleString()} รายการ!`);
+    });
 
     $('input-import-orders-file')?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];

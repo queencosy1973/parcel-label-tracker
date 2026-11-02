@@ -1420,26 +1420,24 @@ ${skuHintList}
         }
       }
 
-      const mergedOrders = deduplicateOrderArray([...qrSystemOrders, ...extraOrders]);
+      // Use ONLY orders imported/saved in parcel-label-tracker (extraOrders) so deleting orders clears 100% cleanly
+      // without dumping thousands of old accumulated orders from daily-parcel-checker onto the dashboard.
+      const mergedOrders = deduplicateOrderArray(extraOrders);
 
-      // Also include any cross-date label photos that match an order in mergedOrders
-      const orderTrackings = new Set(mergedOrders.map((o) => o.cleanTracking).filter(Boolean));
-      const orderIds = new Set(mergedOrders.map((o) => normalizeOrderId(o.orderId)).filter(Boolean));
-      const crossMatchedLabels = (crossData.labelScans || []).filter((ls) =>
-        (ls.cleanTracking && orderTrackings.has(ls.cleanTracking)) ||
-        (ls.cleanOrderId && orderIds.has(ls.cleanOrderId))
-      );
-      const cleanLabelScans = deduplicateLabelScans([...crossMatchedLabels, ...labelScans]);
+      // Only include label photos saved for this targetDate
+      const cleanLabelScans = deduplicateLabelScans(labelScans);
 
-      // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker
+      // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker strictly as a lookup reference
+      // (so they match against this system's orders & label photos without adding unrelated rows when orders are deleted)
       const sameDateQrTrackings = new Set(
         sameDateQrScans.map((s) => normalizeTracking(s.cleanTracking || s.trackingId || '')).filter(Boolean)
       );
+      const lookupSameDateQrScans = sameDateQrScans.map((s) => Object.assign({}, s, { isCrossDateScan: true }));
       const crossQrScans = (crossData.qrScans || [])
         .filter((s) => !sameDateQrTrackings.has(s.cleanTracking))
         .map((s) => Object.assign({}, s, { isCrossDateScan: true }));
 
-      const combinedQrScans = [...sameDateQrScans, ...crossQrScans];
+      const combinedQrScans = [...lookupSameDateQrScans, ...crossQrScans];
       const reconciled = reconcileThreeWayStatus(mergedOrders, combinedQrScans, cleanLabelScans, targetDate);
 
       const result = {
@@ -1456,15 +1454,16 @@ ${skuHintList}
       return result;
     } catch (e) {
       console.warn('syncDailyDataFromCloud warning:', e);
-      const mergedOrders = deduplicateOrderArray([...qrSystemOrders, ...extraOrders]);
+      const mergedOrders = deduplicateOrderArray(extraOrders);
       const cleanLabelScans = deduplicateLabelScans(labelScans);
-      const reconciled = reconcileThreeWayStatus(mergedOrders, sameDateQrScans, cleanLabelScans, targetDate);
+      const lookupSameDateQrScans = sameDateQrScans.map((s) => Object.assign({}, s, { isCrossDateScan: true }));
+      const reconciled = reconcileThreeWayStatus(mergedOrders, lookupSameDateQrScans, cleanLabelScans, targetDate);
       return {
         date: targetDate,
         qrSystemOrders,
         extraOrders,
         orders: mergedOrders,
-        qrScans: sameDateQrScans,
+        qrScans: lookupSameDateQrScans,
         labelScans: cleanLabelScans,
         reconciled
       };
