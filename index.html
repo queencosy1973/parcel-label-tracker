@@ -242,6 +242,9 @@
       <!-- Duplicate Label / Item Alert Banner -->
       <div id="duplicate-label-alert-banner" class="hidden"></div>
 
+      <!-- Pending LINE Bot Approval Banner & Daily Truck Pickup Summary Bar -->
+      <div id="line-pending-and-truck-banner" class="hidden"></div>
+
       <!-- Filter Bar & Search -->
       <div class="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <!-- Status Filter Pills -->
@@ -366,18 +369,53 @@
 
         <!-- Duplicate Upload Warning Box on Tab 2 -->
         <div id="tab2-duplicate-alert-box" class="hidden mt-4"></div>
+
+        <!-- LINE Bot Pending Approval Action Bar (เหมือนระบบบิลซื้อวัสดุ รอแอดมินตรวจอนุมัติ) -->
+        <div id="line-pending-approval-bar" class="hidden mt-4 p-4 rounded-2xl bg-amber-50 border-2 border-amber-400 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-3">
+            <span class="p-2 rounded-xl bg-amber-500 text-white shadow-xs"><i data-lucide="clock" class="w-5 h-5"></i></span>
+            <div>
+              <div class="font-extrabold text-amber-950 text-xs sm:text-sm">
+                ⏳ มีรูปใบลาเบลจากกลุ่ม LINE รอแอดมินตรวจสอบ (<span id="cnt-line-pending-bar">0</span> ใบ)
+              </div>
+              <div class="text-[11px] text-amber-800">
+                รูปที่ส่งมาจาก LINE จะพักไว้ในสถานะ Pending เพื่อไม่ให้กวนยอดที่แอดมินทำอยู่ กดยืนยันเพื่อนำขึ้นแดชบอร์ดได้เลยครับ
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button id="btn-approve-all-line-pending" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 shadow cursor-pointer transition">
+              <i data-lucide="check-check" class="w-4 h-4"></i>
+              <span>✅ อนุมัติรูปจาก LINE ทั้งหมดเข้าแดชบอร์ด</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Split View: Left = Queue List | Right = Side-by-Side Image & AI Editor -->
       <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <!-- Left Column: Scanned Label Queue (5 cols) -->
         <div class="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-xs flex flex-col overflow-hidden">
-          <div class="p-3.5 bg-slate-900 text-white flex items-center justify-between">
-            <div class="font-bold text-xs sm:text-sm flex items-center gap-2">
-              <i data-lucide="list-checks" class="w-4 h-4 text-emerald-400"></i>
-              <span>คิวรูปใบปะหน้าพัสดุประจำวัน (<span id="ai-queue-count">0</span> ใบ)</span>
+          <div class="p-3.5 bg-slate-900 text-white space-y-2.5">
+            <div class="flex items-center justify-between">
+              <div class="font-bold text-xs sm:text-sm flex items-center gap-2">
+                <i data-lucide="list-checks" class="w-4 h-4 text-emerald-400"></i>
+                <span>คิวรูปใบปะหน้าพัสดุประจำวัน (<span id="ai-queue-count">0</span> ใบ)</span>
+              </div>
+              <span class="text-[11px] text-slate-400">คลิกเพื่อดูรูป & อนุมัติ</span>
             </div>
-            <span class="text-[11px] text-slate-400">คลิกที่รายการเพื่อดูรูป & แก้ไข</span>
+            <!-- Queue Sub-Filter Pills (ทั้งหมด / รอตรวจสอบจาก LINE / ยืนยันแล้ว) -->
+            <div class="flex flex-wrap items-center gap-1.5" id="ai-queue-filter-pills">
+              <button data-qfilter="ALL" class="qfilter-pill px-2.5 py-1 rounded-lg text-[11px] font-bold bg-indigo-600 text-white cursor-pointer transition">
+                ทั้งหมด (<span id="qcnt-all">0</span>)
+              </button>
+              <button data-qfilter="PENDING_LINE" class="qfilter-pill px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-400/40 hover:bg-amber-500/30 cursor-pointer transition">
+                ⏳ รอตรวจจาก LINE (<span id="qcnt-pending">0</span>)
+              </button>
+              <button data-qfilter="APPROVED" class="qfilter-pill px-2.5 py-1 rounded-lg text-[11px] font-bold bg-slate-800 text-slate-300 hover:bg-slate-700 cursor-pointer transition">
+                ✅ ยืนยันแล้ว (<span id="qcnt-approved">0</span>)
+              </button>
+            </div>
           </div>
           <div id="ai-queue-list" class="divide-y divide-slate-100 max-h-[680px] overflow-y-auto">
             <!-- Populated by app.js -->
@@ -466,12 +504,48 @@
 
                   <button id="btn-save-label-edit" class="flex-1 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow transition cursor-pointer">
                     <i data-lucide="save" class="w-4 h-4"></i>
-                    <span>บันทึกการแก้ไข & รีเช็คกับออเดอร์ทันที</span>
+                    <span>บันทึกการแก้ไข & ยืนยันเข้าแดชบอร์ดทันที</span>
                   </button>
                 </div>
               </div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           DAILY TRUCK PICKUP & CONTAINER CLOSING LOG (สมุดบันทึกนับรถขนส่งเข้ามารับสินค้า/ปิดตู้)
+           =================================================================== -->
+      <div class="bg-white rounded-2xl p-5 border-2 border-sky-200 shadow-xs space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3.5">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-xs">
+              <i data-lucide="truck" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <h3 class="font-extrabold text-slate-900 text-sm sm:text-base flex items-center gap-2">
+                <span>🚛 สมุดบันทึกนับรถขนส่งเข้ามารับสินค้า & ซีลล็อกปิดตู้ประจำวัน</span>
+                <span class="px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-300 text-xs font-extrabold">
+                  วันนี้เข้ามารับแล้ว <span id="cnt-daily-trucks">0</span> คัน
+                </span>
+              </h3>
+              <p class="text-xs text-slate-500 mt-0.5">
+                เมื่อในกลุ่ม LINE ส่งรูปรถขนส่ง / รูปเรียงของในตู้ / รูปสายซีลสีเหลือง (Seal) ระบบ AI จะคัดแยกมาเก็บไว้ที่นี่อัตโนมัติ ไม่นำไปปนกับยอดใบลาเบลพัสดุ
+              </p>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <label class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition">
+              <i data-lucide="camera" class="w-4 h-4"></i>
+              <span>+ อัปโหลดรูปรถขนส่ง / ปิดตู้</span>
+              <input type="file" id="input-upload-truck-photos" accept="image/*" multiple class="hidden" />
+            </label>
+          </div>
+        </div>
+
+        <div id="truck-logs-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <!-- Populated by app.js -->
         </div>
       </div>
     </section>
@@ -931,6 +1005,24 @@
                 LINE Channel Access Token <span class="text-slate-400 font-normal">(ใส่หรือไม่ใส่ก็ได้ หากกรอก Channel ID + Secret ระบบจะขอ Token อัตโนมัติ)</span>
               </label>
               <input type="password" id="cfg-line-access-token" placeholder="Channel Access Token (Long-lived หรือปล่อยว่างให้ระบบขออัตโนมัติ)" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-mono focus:outline-none focus:border-indigo-600" />
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <label class="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 cursor-pointer">
+                <input type="checkbox" id="cfg-line-pending-mode" checked class="mt-0.5 w-4 h-4 accent-amber-600 rounded" />
+                <div class="text-xs">
+                  <div class="font-bold text-amber-950">⏳ โหมด Pending รอแอดมินตรวจสอบ (เหมือนบิลซื้อวัสดุ)</div>
+                  <div class="text-[11px] text-amber-800 mt-0.5">รูปใบลาเบลที่ส่งจาก LINE จะเข้าคิว "รอตรวจสอบ" ในแท็บ 2 ก่อน ไม่กระทบยอดแดชบอร์ดจนกว่าแอดมินจะกดอนุมัติ</div>
+                </div>
+              </label>
+
+              <label class="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer">
+                <input type="checkbox" id="cfg-line-silent-mode" class="mt-0.5 w-4 h-4 accent-indigo-600 rounded" />
+                <div class="text-xs">
+                  <div class="font-bold text-slate-900">🔕 โหมดดูดรูปเงียบ (ไม่พิมพ์ตอบกลับทุกรูปในกลุ่ม)</div>
+                  <div class="text-[11px] text-slate-600 mt-0.5">บอทจะเก็บใบลาเบลและรูปรถขนส่งเข้าเว็บเงียบๆ และจะเด้งแจ้งเตือนในกลุ่มเฉพาะตอนพบ "ลาเบลซ้ำ" หรือตอนพิมพ์ "สรุปวันนี้"</div>
+                </div>
+              </label>
             </div>
           </div>
 

@@ -21,15 +21,17 @@
     orders: [],
     qrScans: [],
     labelScans: [],
-    reconciled: { items: [], summary: {} },
+    truckLogs: [],
+    reconciled: { items: [], pendingLineScans: [], summary: {} },
 
     // Tab 1 Filters
     dashboardFilter: 'ALL',
     dashboardCarrier: 'ALL',
     dashboardSearch: '',
 
-    // Tab 2 Selected Label Scan for Inspection
+    // Tab 2 Selected Label Scan & Queue Filter
     selectedScanId: '',
+    aiQueueFilter: 'ALL',
 
     // Tab 3 Follow-Up Monitor State
     followUpRange: 'selected', // 'yesterday', 'selected', 'last3', 'last7'
@@ -124,6 +126,7 @@
               bid.startsWith('QC_LABEL_SCAN_') ||
               bid.startsWith('QC_LABEL_ORDERS_') ||
               bid.startsWith('QC_PARCEL_DATA_') ||
+              bid.startsWith('QC_TRUCK_LOG_') ||
               bid === 'QC_LABEL_RETURNS_ALL'
             ) {
               refreshActiveDateData(false);
@@ -149,6 +152,7 @@
       state.orders = daily.orders;
       state.qrScans = daily.qrScans;
       state.labelScans = daily.labelScans;
+      state.truckLogs = daily.truckLogs || [];
       state.reconciled = daily.reconciled;
 
       state.returnRecords = returnRecords;
@@ -351,6 +355,7 @@
     updateDashboardCarrierDropdown();
     renderDashboardTable();
     renderAiQueueTab();
+    renderTruckLogsSection();
     if (state.activeTab === 'tab-followup') {
       renderFollowUpTab();
     }
@@ -380,11 +385,17 @@
     if ($('kpi-label-photo-sub')) {
       const dupPhotos = s.duplicateLabelScansCount || 0;
       const rawPhotos = s.totalRawLabelUploads || s.labelPhotoCount || 0;
+      const pendingLine = s.pendingLineCount || 0;
+      const parts = [];
       if (dupPhotos > 0) {
-        $('kpi-label-photo-sub').innerHTML = `<span class="text-orange-700 font-bold">📸 สแกนรวม ${rawPhotos} รูป (⚠️ ซ้ำ ${dupPhotos} รูป)</span>`;
+        parts.push(`<span class="text-orange-700 font-bold">📸 สแกนรวม ${rawPhotos} รูป (⚠️ ซ้ำ ${dupPhotos} รูป)</span>`);
       } else {
-        $('kpi-label-photo-sub').textContent = 'จาก LINE Bot + หน้าเว็บ (ไม่มีรูปซ้ำ)';
+        parts.push('<span>จาก LINE Bot + หน้าเว็บ (ไม่มีรูปซ้ำ)</span>');
       }
+      if (pendingLine > 0) {
+        parts.push(`<span class="text-amber-700 font-extrabold block">⏳ รอตรวจจาก LINE ${pendingLine} ใบ</span>`);
+      }
+      $('kpi-label-photo-sub').innerHTML = parts.join(' ');
     }
     if ($('kpi-verified-all')) $('kpi-verified-all').textContent = s.verifiedAllCount.toLocaleString();
 
@@ -406,6 +417,95 @@
     if ($('cnt-filter-dup-photo')) $('cnt-filter-dup-photo').textContent = s.duplicateLabelItemsCount || 0;
 
     renderDuplicateAlertBanner();
+    renderLinePendingAndTruckBanner();
+  }
+
+  function renderLinePendingAndTruckBanner() {
+    const el = $('line-pending-and-truck-banner');
+    if (!el) return;
+
+    const pendingCount = state.reconciled.summary?.pendingLineCount || 0;
+    const truckCount = (state.truckLogs || []).length;
+
+    if (pendingCount === 0 && truckCount === 0) {
+      el.classList.add('hidden');
+      el.innerHTML = '';
+      return;
+    }
+
+    const cards = [];
+
+    if (pendingCount > 0) {
+      cards.push(`
+        <div class="flex-1 min-w-[280px] bg-amber-50 border-2 border-amber-400 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-2.5 shadow-xs">
+          <div class="flex items-center gap-2.5">
+            <span class="p-2 rounded-xl bg-amber-500 text-white"><i data-lucide="clock" class="w-4 h-4"></i></span>
+            <div>
+              <div class="font-extrabold text-amber-950 text-xs sm:text-sm">
+                ⏳ มีรูปใบลาเบลจาก LINE Bot รอแอดมินตรวจสอบ ${pendingCount} ใบ
+              </div>
+              <div class="text-[11px] text-amber-800">
+                พักไว้ในคิว Pending เพื่อไม่ให้ปนกับงานที่แอดมินกำลังทำ กดตรวจสอบหรืออนุมัติทั้งหมดได้เลย
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-dash-review-pending" class="px-3 py-1.5 rounded-xl bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold cursor-pointer transition">
+              🔍 เปิดตรวจรูป (${pendingCount})
+            </button>
+            <button id="btn-dash-approve-all-pending" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer transition">
+              ✅ อนุมัติทั้งหมดทันที
+            </button>
+          </div>
+        </div>
+      `);
+    }
+
+    if (truckCount > 0) {
+      const latestTruck = state.truckLogs[0];
+      const latestDesc = [
+        latestTruck.carrier || 'รถขนส่ง',
+        latestTruck.truckPlate ? `ทะเบียน/ตู้ ${latestTruck.truckPlate}` : '',
+        latestTruck.sealNumber ? `ซีล ${latestTruck.sealNumber}` : '',
+        latestTruck.logTime ? `(${latestTruck.logTime})` : ''
+      ].filter(Boolean).join(' • ');
+
+      cards.push(`
+        <div class="flex-1 min-w-[280px] bg-sky-50 border-2 border-sky-300 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-2.5 shadow-xs">
+          <div class="flex items-center gap-2.5">
+            <span class="p-2 rounded-xl bg-sky-600 text-white"><i data-lucide="truck" class="w-4 h-4"></i></span>
+            <div>
+              <div class="font-extrabold text-sky-950 text-xs sm:text-sm">
+                🚛 รถขนส่งเข้ามารับสินค้า / ปิด Book งานวันนี้แล้ว: ${truckCount} คัน
+              </div>
+              <div class="text-[11px] text-sky-800">
+                คันล่าสุด: ${escapeHtml(latestDesc)} (แยกจากยอดใบลาเบลอัตโนมัติ)
+              </div>
+            </div>
+          </div>
+          <button id="btn-dash-view-trucks" class="px-3 py-1.5 rounded-xl bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold cursor-pointer transition">
+            🚛 ดูรูปรถขนส่ง & ซีลปิดตู้ (${truckCount})
+          </button>
+        </div>
+      `);
+    }
+
+    el.classList.remove('hidden');
+    el.innerHTML = `<div class="flex flex-wrap gap-3">${cards.join('')}</div>`;
+
+    el.querySelector('#btn-dash-review-pending')?.addEventListener('click', async () => {
+      state.aiQueueFilter = 'PENDING_LINE';
+      await switchTab('tab-ai-queue');
+    });
+
+    el.querySelector('#btn-dash-approve-all-pending')?.addEventListener('click', async () => {
+      await handleApproveAllPendingLineScans();
+    });
+
+    el.querySelector('#btn-dash-view-trucks')?.addEventListener('click', async () => {
+      await switchTab('tab-ai-queue');
+      $('truck-logs-grid')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
   }
 
   function renderDuplicateAlertBanner() {
@@ -730,6 +830,79 @@
 
     $('btn-save-label-edit')?.addEventListener('click', handleSaveInspectorEdit);
     $('btn-delete-label-scan')?.addEventListener('click', handleDeleteInspectorScan);
+    $('btn-approve-all-line-pending')?.addEventListener('click', handleApproveAllPendingLineScans);
+
+    document.querySelectorAll('#ai-queue-filter-pills .qfilter-pill').forEach((pill) => {
+      pill.addEventListener('click', () => {
+        state.aiQueueFilter = pill.dataset.qfilter || 'ALL';
+        renderAiQueueTab();
+      });
+    });
+
+    $('input-upload-truck-photos')?.addEventListener('change', (e) => {
+      if (e.target.files?.length) {
+        processUploadedTruckFiles(Array.from(e.target.files));
+        e.target.value = '';
+      }
+    });
+  }
+
+  async function handleApproveAllPendingLineScans() {
+    const pendingCount = (state.labelScans || []).filter((s) => s && s.approvalStatus === 'PENDING_LINE').length;
+    if (pendingCount === 0) {
+      showToast('ไม่มีรูปจาก LINE ที่ค้างรออนุมัติแล้วครับ');
+      return;
+    }
+    const staff = state.config.staffName || 'แอดมิน';
+    await TrackerDB.approvePendingLineScans(state.activeDate, [], staff);
+    state.aiQueueFilter = 'ALL';
+    await refreshActiveDateData(false);
+    showToast(`✅ อนุมัติรูปใบลาเบลจาก LINE จำนวน ${pendingCount} ใบ ขึ้นแดชบอร์ดเรียบร้อยแล้ว!`);
+  }
+
+  async function processUploadedTruckFiles(files) {
+    if (!files || files.length === 0) return;
+    const cfg = await TrackerDB.fetchCloudConfig();
+    const apiKey = cfg.geminiApiKey || state.config.geminiApiKey || '';
+    const model = cfg.geminiModel || state.config.geminiModel || 'gemini-flash-latest';
+
+    showToast(`🚛 กำลังใช้ AI วิเคราะห์รูปรถขนส่ง / ซีลปิดตู้ ${files.length} รูป...`);
+    for (const file of files) {
+      try {
+        const compressed = await compressImageFile(file);
+        let truckData = {
+          carrier: 'รถขนส่งเข้ารับสินค้า',
+          truckPlate: '',
+          sealNumber: '',
+          photoTimestamp: '',
+          estimatedBoxesNote: `อัปโหลดรูปรถขนส่ง (${file.name})`
+        };
+        if (apiKey) {
+          try {
+            const classified = await TrackerDB.classifyAndExtractLineImageWithGemini(
+              compressed.base64,
+              compressed.mimeType,
+              apiKey,
+              model
+            );
+            if (classified && classified.truckData) {
+              truckData = classified.truckData;
+            }
+          } catch (e) {
+            console.warn('Truck AI classify warning:', e);
+          }
+        }
+        await TrackerDB.recordIncomingTruckLog(truckData, compressed.dataUrl, {
+          date: state.activeDate,
+          sourceChannel: 'WEB_UPLOAD',
+          senderName: state.config.staffName || 'อัปโหลดผ่านหน้าเว็บ'
+        });
+      } catch (err) {
+        console.error('Upload truck photo error:', err);
+      }
+    }
+    await refreshActiveDateData(false);
+    showToast(`🚛 บันทึกรูปรถขนส่งเข้าสมุดนับรถประจำวันเรียบร้อย ${files.length} รูป!`);
   }
 
   /**
@@ -876,14 +1049,45 @@
     const countEl = $('ai-queue-count');
     if (!listEl) return;
 
-    const scans = state.labelScans || [];
-    if (countEl) countEl.textContent = scans.length.toLocaleString();
+    const allScans = state.labelScans || [];
+    const pendingList = allScans.filter((s) => s && s.approvalStatus === 'PENDING_LINE');
+    const approvedList = allScans.filter((s) => !s || s.approvalStatus !== 'PENDING_LINE');
+
+    if (countEl) countEl.textContent = allScans.length.toLocaleString();
+    if ($('qcnt-all')) $('qcnt-all').textContent = allScans.length;
+    if ($('qcnt-pending')) $('qcnt-pending').textContent = pendingList.length;
+    if ($('qcnt-approved')) $('qcnt-approved').textContent = approvedList.length;
+
+    const pendingBar = $('line-pending-approval-bar');
+    if (pendingBar) {
+      if (pendingList.length > 0) {
+        pendingBar.classList.remove('hidden');
+        if ($('cnt-line-pending-bar')) $('cnt-line-pending-bar').textContent = pendingList.length;
+      } else {
+        pendingBar.classList.add('hidden');
+      }
+    }
+
+    document.querySelectorAll('#ai-queue-filter-pills .qfilter-pill').forEach((p) => {
+      if (p.dataset.qfilter === state.aiQueueFilter) {
+        p.classList.add('ring-2', 'ring-white');
+      } else {
+        p.classList.remove('ring-2', 'ring-white');
+      }
+    });
+
+    let scans = allScans;
+    if (state.aiQueueFilter === 'PENDING_LINE') {
+      scans = pendingList;
+    } else if (state.aiQueueFilter === 'APPROVED') {
+      scans = approvedList;
+    }
 
     if (scans.length === 0) {
       listEl.innerHTML = `
         <div class="p-10 text-center text-slate-400 text-xs">
           <i data-lucide="camera-off" class="w-8 h-8 mx-auto mb-2 text-slate-300"></i>
-          <div>ยังไม่มีรูปถ่ายใบปะหน้าพัสดุในวันที่ ${escapeHtml(state.activeDate)}</div>
+          <div>ยังไม่มีรูปถ่ายใบปะหน้าพัสดุในหมวดนี้ของวันที่ ${escapeHtml(state.activeDate)}</div>
           <div class="mt-1">ส่งรูปเข้ากลุ่ม LINE หรือลากรูปลงกล่องด้านบนได้เลยครับ</div>
         </div>
       `;
@@ -901,6 +1105,7 @@
     let html = '';
     scans.forEach((s) => {
       const isSelected = s.id === state.selectedScanId;
+      const isPendingLine = s.approvalStatus === 'PENDING_LINE';
       const rec = itemByScanId.get(s.id);
       const status = rec ? rec.threeWayStatus : 'UNMATCHED_PHOTO';
 
@@ -909,13 +1114,18 @@
           ? `<span class="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[10px] font-extrabold">⚠️ ซ้ำ ${(s.duplicateCount || 1) + 1} รอบ</span>`
           : '';
 
+      const pendingBadge = isPendingLine
+        ? `<span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-400 text-[10px] font-extrabold">⏳ รอแอดมินยืนยัน (LINE)</span>`
+        : '';
+
       html += `
-        <div data-scan-id="${escapeHtml(s.id)}" class="queue-item p-3.5 cursor-pointer transition flex items-start justify-between gap-2 ${isSelected ? 'bg-indigo-50 border-l-4 border-l-indigo-600' : 'hover:bg-slate-50'}">
+        <div data-scan-id="${escapeHtml(s.id)}" class="queue-item p-3.5 cursor-pointer transition flex items-start justify-between gap-2 ${isSelected ? 'bg-indigo-50 border-l-4 border-l-indigo-600' : isPendingLine ? 'bg-amber-50/50 hover:bg-amber-50' : 'hover:bg-slate-50'}">
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-1.5">
               <span class="font-mono font-bold text-xs sm:text-sm text-slate-900">${escapeHtml(s.trackingId || 'รอระบุเลขพัสดุ')}</span>
               <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">${escapeHtml(s.carrier)}</span>
               ${dupQueueBadge}
+              ${pendingBadge}
             </div>
             <div class="text-xs text-slate-700 font-medium truncate mt-0.5">${escapeHtml(s.sku || '-')} (x${s.qty || 1})</div>
             <div class="text-[11px] text-slate-400 mt-0.5">
@@ -923,8 +1133,11 @@
               ${(s.duplicateCount || 0) > 0 ? `<span class="text-orange-700 font-bold"> • ครั้งแรก: ${escapeHtml(s.firstScanTime || '-')}</span>` : ''}
             </div>
           </div>
-          <div class="shrink-0 text-right">
-            ${getThreeWayBadgeHtml(status)}
+          <div class="shrink-0 text-right flex flex-col items-end gap-1">
+            ${isPendingLine
+              ? `<button data-quick-approve="${escapeHtml(s.id)}" class="btn-quick-approve-line px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold shadow-xs cursor-pointer transition">✅ อนุมัติใบนี้</button>`
+              : getThreeWayBadgeHtml(status)
+            }
           </div>
         </div>
       `;
@@ -934,6 +1147,18 @@
     listEl.querySelectorAll('.queue-item').forEach((el) => {
       el.addEventListener('click', () => {
         selectScanForInspector(el.dataset.scanId);
+      });
+    });
+
+    listEl.querySelectorAll('.btn-quick-approve-line').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const scanId = btn.dataset.quickApprove;
+        if (!scanId) return;
+        const staff = state.config.staffName || 'แอดมิน';
+        await TrackerDB.approvePendingLineScans(state.activeDate, [scanId], staff);
+        await refreshActiveDateData(false);
+        showToast('✅ อนุมัติใบลาเบลจาก LINE ขึ้นแดชบอร์ดเรียบร้อยแล้ว!');
       });
     });
 
@@ -1023,13 +1248,106 @@
       qty: parseInt($('edit-qty')?.value, 10) || 1,
       customerName: $('edit-customer')?.value.trim() || '',
       province: $('edit-province')?.value.trim() || '',
+      approvalStatus: 'APPROVED',
+      approvedBy: state.config.staffName || 'แอดมิน',
       updatedAt: new Date().toISOString()
     });
 
     recomputeLocalReconciliation();
     await TrackerDB.saveLabelScansToCloud(state.activeDate, state.labelScans, state.config.staffName);
     renderAll();
-    showToast('✅ บันทึกข้อมูลใบปะหน้าพัสดุและรีเช็ค 3 ทางเรียบร้อยแล้ว!');
+    showToast('✅ บันทึกข้อมูลและอนุมัติใบปะหน้าพัสดุขึ้นแดชบอร์ดเรียบร้อยแล้ว!');
+  }
+
+  async function renderTruckLogsSection() {
+    const grid = $('truck-logs-grid');
+    const cntEl = $('cnt-daily-trucks');
+    const trucks = state.truckLogs || [];
+    if (cntEl) cntEl.textContent = trucks.length;
+    if (!grid) return;
+
+    if (trucks.length === 0) {
+      grid.innerHTML = `
+        <div class="col-span-full py-10 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+          <i data-lucide="truck" class="w-8 h-8 mx-auto mb-2 text-slate-300"></i>
+          <div class="text-xs font-bold text-slate-600">ยังไม่มีรูปรถขนส่งเข้ามารับสินค้า / รูปปิดตู้ของวันที่ ${escapeHtml(state.activeDate)}</div>
+          <div class="text-[11px] text-slate-400 mt-1">เมื่อพนักงานส่งรูปรถขนส่งหรือรูปสายซีลสีเหลืองในกลุ่ม LINE ระบบจะแยกมาเก็บไว้ที่นี่อัตโนมัติครับ</div>
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = trucks
+      .map((t, idx) => {
+        const orderNum = trucks.length - idx;
+        return `
+          <div class="bg-slate-50 rounded-2xl border border-sky-200 overflow-hidden shadow-xs flex flex-col justify-between">
+            <div>
+              <div class="bg-slate-900 h-44 flex items-center justify-center relative overflow-hidden">
+                <img id="truck-img-${escapeHtml(t.id)}" src="${escapeHtml(t.imageDataUrl || '')}" alt="Truck Log" class="w-full h-full object-cover ${t.imageDataUrl ? '' : 'hidden'}" />
+                <div id="truck-img-loading-${escapeHtml(t.id)}" class="text-[11px] text-slate-300 ${t.imageDataUrl ? 'hidden' : ''}">กำลังโหลดรูปรถขนส่ง...</div>
+                <span class="absolute top-2 left-2 px-2.5 py-0.5 rounded-full bg-sky-600 text-white text-[11px] font-extrabold shadow">
+                  🚛 คันที่ ${orderNum}
+                </span>
+                <span class="absolute top-2 right-2 px-2 py-0.5 rounded bg-black/70 text-white text-[10px] font-mono">
+                  ${escapeHtml(t.logTime || '')}
+                </span>
+              </div>
+              <div class="p-3 space-y-1 text-xs">
+                <div class="font-extrabold text-slate-900 flex items-center justify-between gap-1">
+                  <span>${escapeHtml(t.carrier || 'รถขนส่งเข้ารับสินค้า')}</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">${t.sourceChannel === 'LINE_GROUP' ? 'LINE Bot' : 'เว็บ'}</span>
+                </div>
+                ${t.truckPlate ? `<div class="text-slate-700">🪪 ทะเบียน/เบอร์ตู้: <b class="font-mono text-slate-900">${escapeHtml(t.truckPlate)}</b></div>` : ''}
+                ${t.sealNumber ? `<div class="text-amber-900 bg-amber-100 px-2 py-0.5 rounded font-bold inline-block">🔒 ซีลล็อกตู้: <span class="font-mono">${escapeHtml(t.sealNumber)}</span></div>` : ''}
+                ${t.photoTimestamp ? `<div class="text-[11px] text-slate-500">🕒 เวลาในภาพ: ${escapeHtml(t.photoTimestamp)}</div>` : ''}
+                <div class="text-[11px] text-slate-600 pt-0.5">${escapeHtml(t.estimatedBoxesNote || '')}</div>
+              </div>
+            </div>
+            <div class="px-3 pb-3 pt-1 flex items-center justify-end">
+              <button data-del-truck="${escapeHtml(t.id)}" class="btn-delete-truck-log text-[11px] text-rose-600 hover:text-rose-800 font-bold flex items-center gap-1 cursor-pointer">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> ลบรูปรถคันนี้
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+
+    // Lazy-load truck images from QC_LABEL_IMG_<id>
+    trucks.forEach(async (t) => {
+      if (!t.imageDataUrl && t.id) {
+        const imgUrl = await TrackerDB.fetchLabelImage(t.id);
+        if (imgUrl) {
+          t.imageDataUrl = imgUrl;
+          const imgEl = $(`truck-img-${t.id}`);
+          const loadEl = $(`truck-img-loading-${t.id}`);
+          if (imgEl) {
+            imgEl.src = imgUrl;
+            imgEl.classList.remove('hidden');
+          }
+          if (loadEl) loadEl.classList.add('hidden');
+        }
+      }
+    });
+
+    grid.querySelectorAll('.btn-delete-truck-log').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const truckId = btn.dataset.delTruck;
+        if (!truckId) return;
+        const pwd = prompt('กรุณาใส่รหัสผ่านแอดมินเพื่อลบรูปรถขนส่ง:');
+        const expected = (state.config?.adminPassword || '1973').trim();
+        if (!pwd || pwd.trim() !== expected) {
+          alert('รหัสผ่านไม่ถูกต้อง');
+          return;
+        }
+        await TrackerDB.deleteTruckLogFromCloud(state.activeDate, truckId, state.config.staffName || 'แอดมิน');
+        await refreshActiveDateData(false);
+        showToast('🗑️ ลบรูปรถขนส่งเรียบร้อยแล้ว');
+      });
+    });
   }
 
   async function handleDeleteInspectorScan() {
@@ -1510,6 +1828,8 @@
     if ($('cfg-line-channel-id')) $('cfg-line-channel-id').value = cfg.lineChannelId || '';
     if ($('cfg-line-channel-secret')) $('cfg-line-channel-secret').value = cfg.lineChannelSecret || '';
     if ($('cfg-line-access-token')) $('cfg-line-access-token').value = cfg.lineChannelAccessToken || '';
+    if ($('cfg-line-pending-mode')) $('cfg-line-pending-mode').checked = cfg.lineBotPendingMode !== false;
+    if ($('cfg-line-silent-mode')) $('cfg-line-silent-mode').checked = Boolean(cfg.lineBotSilentMode);
     if ($('cfg-gemini-api-key')) $('cfg-gemini-api-key').value = cfg.geminiApiKey || '';
     if ($('cfg-gemini-model')) $('cfg-gemini-model').value = cfg.geminiModel || 'gemini-flash-latest';
     if ($('cfg-admin-password')) $('cfg-admin-password').value = cfg.adminPassword || '1973';
@@ -1539,6 +1859,8 @@
         lineChannelId: ($('cfg-line-channel-id')?.value || '').trim(),
         lineChannelSecret: ($('cfg-line-channel-secret')?.value || '').trim(),
         lineChannelAccessToken: ($('cfg-line-access-token')?.value || '').trim(),
+        lineBotPendingMode: Boolean($('cfg-line-pending-mode')?.checked),
+        lineBotSilentMode: Boolean($('cfg-line-silent-mode')?.checked),
         geminiApiKey: ($('cfg-gemini-api-key')?.value || '').trim(),
         geminiModel: $('cfg-gemini-model')?.value || 'gemini-flash-latest',
         adminPassword: ($('cfg-admin-password')?.value || '1973').trim() || '1973',

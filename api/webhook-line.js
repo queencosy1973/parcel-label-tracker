@@ -156,24 +156,70 @@ module.exports = async function handler(req, res) {
         const base64Data = Buffer.from(arrayBuf).toString('base64');
         const imageDataUrl = `data:${contentType};base64,${base64Data}`;
 
-        let extracted = null;
+        let classified = null;
         let ocrError = null;
         try {
-          extracted = await TrackerDB.scanLabelImageWithGemini(base64Data, contentType, geminiApiKey, geminiModel);
+          classified = await TrackerDB.classifyAndExtractLineImageWithGemini(base64Data, contentType, geminiApiKey, geminiModel);
         } catch (err) {
           ocrError = err;
-          extracted = TrackerDB.normalizeExtractedLabelData({
-            trackingId: '',
-            orderId: '',
-            sku: 'รอตรวจสอบรูปใบลาเบลบนหน้าเว็บ',
-            confidence: 'LOW',
-            notes: err.message
-          });
+          classified = {
+            imageCategory: 'PARCEL_LABEL',
+            labelData: TrackerDB.normalizeExtractedLabelData({
+              trackingId: '',
+              orderId: '',
+              sku: 'รอตรวจสอบรูปใบลาเบลบนหน้าเว็บ',
+              confidence: 'LOW',
+              notes: err.message
+            })
+          };
         }
 
+        const lineApprovalMode = cloudCfg.lineBotPendingMode === false ? 'APPROVED' : 'PENDING_LINE';
+        const lineSilentMode = Boolean(cloudCfg.lineBotSilentMode);
+
+        // -------------------------------------------------------------------
+        // SUBCASE 1A: TRUCK CLOSING / CONTAINER SEAL PHOTO (รูปรถขนส่งเข้ามารับงาน / ปิดตู้)
+        // -------------------------------------------------------------------
+        if (classified.imageCategory === 'TRUCK_CLOSING') {
+          const truckResult = await TrackerDB.recordIncomingTruckLog(classified.truckData, imageDataUrl, {
+            sourceChannel: 'LINE_GROUP',
+            senderName: 'กลุ่ม LINE รายงานขนส่ง'
+          });
+          const t = truckResult.truckLog;
+
+          if (!lineSilentMode) {
+            const truckReplyLines = [
+              `🚛 บันทึกรูปรถขนส่ง / ปิด Book งานสำเร็จ! (คันที่ ${truckResult.totalTrucksToday} ของวันนี้)`,
+              `━━━━━━━━━━━━━━`,
+              `🏢 ขนส่ง: ${t.carrier || 'รถขนส่งเข้ารับสินค้า'}`,
+              t.truckPlate ? `🪪 ทะเบียน/รหัสตู้: ${t.truckPlate}` : null,
+              t.sealNumber ? `🔒 เลขซีลล็อกตู้ (Seal): ${t.sealNumber}` : null,
+              t.photoTimestamp ? `🕒 เวลาในภาพ: ${t.photoTimestamp}` : `🕒 เวลาบันทึก: ${t.logTime}`,
+              `📝 รายละเอียด: ${t.estimatedBoxesNote || 'รูปรถขนส่ง/ปิดตู้'}`,
+              `━━━━━━━━━━━━━━`,
+              `✅ แยกเก็บในหมวด "สมุดนับรถขนส่งรายวัน" เรียบร้อย (ไม่ปนกับยอดใบลาเบลพัสดุ)`
+            ].filter(Boolean);
+            await replyToLine(replyToken, lineAccessToken, truckReplyLines.join('\n'));
+          }
+          continue;
+        }
+
+        // -------------------------------------------------------------------
+        // SUBCASE 1B: OTHER / GENERAL PHOTO (รูปทั่วไปที่ไม่ใช่ใบลาเบลและไม่ใช่รูปรถขนส่ง)
+        // -------------------------------------------------------------------
+        if (classified.imageCategory === 'OTHER') {
+          // Do not pollute parcel label counts or truck logs
+          continue;
+        }
+
+        // -------------------------------------------------------------------
+        // SUBCASE 1C: PARCEL SHIPPING LABEL PHOTO (รูปใบปะหน้าพัสดุ)
+        // -------------------------------------------------------------------
+        const extracted = classified.labelData;
         const recordResult = await TrackerDB.recordIncomingLabelScan(extracted, imageDataUrl, {
           sourceChannel: 'LINE_GROUP',
-          senderName: 'กลุ่ม LINE ส่งรูปพัสดุ'
+          senderName: 'กลุ่ม LINE ส่งรูปพัสดุ',
+          approvalStatus: lineApprovalMode
         });
 
         const scan = recordResult.scan;
@@ -183,53 +229,67 @@ module.exports = async function handler(req, res) {
 
         const orderStatusLine = recordResult.hasOrder
           ? `📋 พบในคำสั่งซื้อวันที่: ${TrackerDB.formatThaiDateDisplay(recordResult.targetDate)}`
-          : `❓ ยังไม่พบในไฟล์คำสั่งซื้อวันนี้ (ระบบบันทึกรูปไว้จับคู่ให้อัตโนมัติ)`;
+          : `❓ ยังไม่พบในไฟล์คำสั่งซื้อ (รอแอดมินตรวจสอบบนหน้าเว็บ)`;
+
+        const pendingNotice = scan.approvalStatus === 'PENDING_LINE'
+          ? `⏳ สถานะ: เข้าคิว "รอแอดมินกดยืนยัน (Pending)" บนหน้าเว็บ`
+          : `✅ สถานะ: บันทึกขึ้นแดชบอร์ดเรียบร้อย`;
 
         const dedupNotice = recordResult.isUpdatedExisting
-          ? `🔄 อัปเดตทับรายการเดิมของเลขพัสดุนี้เรียบร้อย (ไม่สร้างรายการซ้ำ)`
+          ? `⚠️ แจ้งเตือนใบลาเบลซ้ำ! เลขพัสดุ ${scan.trackingId} เคยส่งมาแล้วเมื่อ ${scan.firstScanTime || '-'} (สแกนซ้ำรอบที่ ${(recordResult.duplicateCount || 1) + 1})`
           : null;
 
-        const replyLines = ocrError
-          ? [
-              `📸 รับรูปใบปะหน้าพัสดุเข้าคิวตรวจสอบแล้ว!`,
-              `⚠️ AI อ่านตัวเลขอัตโนมัติไม่สำเร็จ (${ocrError.message.slice(0, 80)})`,
-              `ระบบเก็บรูปไว้ในแท็บ "คิวตรวจสอบ AI" บนหน้าเว็บเรียบร้อยแล้วครับ`
-            ]
-          : [
-              `📦 ตรวจเช็คใบปะหน้าพัสดุสำเร็จ!`,
-              `━━━━━━━━━━━━━━`,
-              `🔢 เลขพัสดุ: ${scan.trackingId || 'อ่านไม่ชัด (รอตรวจบนเว็บ)'}`,
-              `🚚 ขนส่ง: ${scan.carrier || '-'} (${scan.platform || 'ทั่วไป'})`,
-              `🧾 Order ID: ${scan.orderId || '-'}`,
-              `🛋 สินค้า: ${scan.sku || '-'} (x${scan.qty || 1} ชิ้น)`,
-              scan.customerName || scan.province
-                ? `👤 ผู้รับ: ${[scan.customerName, scan.province].filter(Boolean).join(' • จ.')}`
-                : null,
-              `━━━━━━━━━━━━━━`,
-              qrStatusLine,
-              orderStatusLine,
-              dedupNotice
-            ].filter(Boolean);
+        // If silent mode is enabled, only reply when there is a duplicate or unmatched warning!
+        if (!lineSilentMode || recordResult.isUpdatedExisting || !recordResult.hasOrder) {
+          const replyLines = ocrError
+            ? [
+                `📸 รับรูปใบปะหน้าพัสดุเข้าคิวรอตรวจสอบ (Pending) แล้ว!`,
+                `⚠️ AI อ่านตัวเลขอัตโนมัติไม่สำเร็จ (${ocrError.message.slice(0, 80)})`,
+                `ระบบเก็บรูปไว้ในแท็บ "คิวตรวจสอบ AI" บนหน้าเว็บเรียบร้อยแล้วครับ`
+              ]
+            : [
+                recordResult.isUpdatedExisting
+                  ? `⚠️ แจ้งเตือน: รูปใบลาเบลซ้ำ! (รอบที่ ${(recordResult.duplicateCount || 1) + 1})`
+                  : `📦 รับรูปใบปะหน้าพัสดุเข้าคิวตรวจสอบสำเร็จ!`,
+                `━━━━━━━━━━━━━━`,
+                `🔢 เลขพัสดุ: ${scan.trackingId || 'อ่านไม่ชัด (รอตรวจบนเว็บ)'}`,
+                `🚚 ขนส่ง: ${scan.carrier || '-'} (${scan.platform || 'ทั่วไป'})`,
+                `🧾 Order ID: ${scan.orderId || '-'}`,
+                `🛋 สินค้า: ${scan.sku || '-'} (x${scan.qty || 1} ชิ้น)`,
+                scan.customerName || scan.province
+                  ? `👤 ผู้รับ: ${[scan.customerName, scan.province].filter(Boolean).join(' • จ.')}`
+                  : null,
+                `━━━━━━━━━━━━━━`,
+                pendingNotice,
+                qrStatusLine,
+                orderStatusLine,
+                dedupNotice
+              ].filter(Boolean);
 
-        await replyToLine(replyToken, lineAccessToken, replyLines.join('\n'));
+          await replyToLine(replyToken, lineAccessToken, replyLines.join('\n'));
+        }
       }
 
       // =======================================================================
-      // CASE 2: TEXT COMMAND IN GROUP ("เช็คยอด", "สรุปพัสดุ", "รีเช็ค")
+      // CASE 2: TEXT COMMAND IN GROUP ("เช็คยอด", "สรุปพัสดุ", "เช็ครถ", "สรุปวันนี้")
       // =======================================================================
       else if (msg.type === 'text') {
         const text = String(msg.text || '').trim();
-        if (['เช็คยอด', 'สรุปพัสดุ', 'รีเช็ค', 'สรุปวันนี้', 'เช็คพัสดุ'].includes(text)) {
+        if (['เช็คยอด', 'สรุปพัสดุ', 'รีเช็ค', 'สรุปวันนี้', 'เช็คพัสดุ', 'เช็ครถ', 'สรุปรถ'].includes(text)) {
           const today = TrackerDB.getTodayString();
           const daily = await TrackerDB.syncDailyDataFromCloud(today);
           const s = daily.reconciled.summary;
+          const trucks = Array.isArray(daily.truckLogs) ? daily.truckLogs : [];
 
           const summaryLines = [
-            `📊 สรุปรีเช็คพัสดุขาออกประจำวัน (${TrackerDB.formatThaiDateDisplay(today)})`,
+            `📊 สรุปรีเช็คพัสดุ & รถขนส่งประจำวัน (${TrackerDB.formatThaiDateDisplay(today)})`,
             `━━━━━━━━━━━━━━`,
             `📋 ออเดอร์ทั้งหมด: ${s.totalOrders} พัสดุ (${s.totalUnits} ชิ้น)`,
             `🔫 ยิง QR แล้ว: ${s.qrScannedCount} พัสดุ`,
-            `📸 ถ่ายรูปใบลาเบลแล้ว: ${s.labelPhotoCount} พัสดุ`,
+            `📸 ถ่ายรูปใบลาเบล (ยืนยันแล้ว): ${s.labelPhotoCount} พัสดุ`,
+            s.pendingLineCount > 0 ? `⏳ รูปใบลาเบลจาก LINE รอแอดมินยืนยัน: ${s.pendingLineCount} ใบ` : null,
+            s.duplicateLabelScansCount > 0 ? `⚠️ พบถ่ายรูปใบลาเบลซ้ำ: ${s.duplicateLabelScansCount} รูป` : null,
+            `🚛 รถขนส่งเข้ามารับสินค้า/ปิดตู้แล้ว: ${trucks.length} คัน`,
             `━━━━━━━━━━━━━━`,
             `✅ ผ่านการรีเช็คครบ 3 ทาง: ${s.verifiedAllCount} พัสดุ`,
             s.photoOnlyCount > 0 ? `⚠️ ถ่ายรูปแล้วแต่ยังไม่ยิง QR: ${s.photoOnlyCount} พัสดุ` : null,

@@ -515,7 +515,9 @@
    */
   function reconcileThreeWayStatus(orders = [], qrScans = [], labelScans = [], date = '') {
     const cleanOrders = deduplicateOrderArray(orders);
-    const cleanLabels = deduplicateLabelScans(labelScans);
+    const allCleanLabels = deduplicateLabelScans(labelScans);
+    const pendingLineScans = allCleanLabels.filter((ls) => ls && ls.approvalStatus === 'PENDING_LINE');
+    const cleanLabels = allCleanLabels.filter((ls) => !ls || ls.approvalStatus !== 'PENDING_LINE');
     const safeQrScans = Array.isArray(qrScans) ? qrScans.filter((s) => !s.isBlocked) : [];
 
     // 1. Index QR Scans by cleanTracking and by matchedOrderId
@@ -877,10 +879,12 @@
 
     const issuesToFollowCount = photoOnlyCount + qrOnlyCount + orderPendingCount + unmatchedPhotoCount;
     const totalRawLabelUploads = labelPhotoCount + duplicateLabelScansCount;
+    const pendingLineCount = pendingLineScans.length;
 
     return {
       date: date || getTodayString(),
       items: reconciledItems,
+      pendingLineScans,
       summary: {
         totalItems: reconciledItems.length,
         totalOrders,
@@ -890,6 +894,7 @@
         totalRawLabelUploads,
         duplicateLabelScansCount,
         duplicateLabelItemsCount,
+        pendingLineCount,
         verifiedAllCount,
         photoOnlyCount,
         qrOnlyCount,
@@ -1046,6 +1051,145 @@ ${skuHintList}
         const candidateText = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
         const parsed = extractJsonFromText(candidateText);
         return normalizeExtractedLabelData(parsed);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    throw lastError || new Error('ไม่สามารถเชื่อมต่อ Gemini Vision API ได้');
+  }
+
+  /**
+   * Smart 3-Way LINE Image Classifier & OCR (PARCEL_LABEL vs TRUCK_CLOSING vs OTHER)
+   * Used by /api/webhook-line so LINE group photos containing both shipping labels and
+   * truck closing / container seal photos are automatically separated!
+   */
+  function buildLineImageClassifierPrompt() {
+    const skuHintList = QUEENCOSY_SKU_CATALOG.map((s) => `${s.code.toUpperCase()} (${s.name})`).join(', ');
+    return `คุณคือระบบ AI ตรวจสอบภาพในกลุ่ม LINE "รายงานขนส่งประจำวัน" ของโรงงานโซฟาและเฟอร์นิเจอร์ "QueenCosy"
+ในกลุ่ม LINE นี้ พนักงานจะส่งรูปภาพเข้ามาหลายประเภทปนกัน หน้าที่แรกของคุณคือแยกแยะประเภทรูปภาพ (imageCategory) ให้แม่นยำ 100% ออกเป็น 3 หมวดดังนี้:
+
+1. "PARCEL_LABEL" = รูปถ่ายใบปะหน้าพัสดุขนส่ง (Shipping Label ที่มีบาร์โค้ด/QR Code เลขพัสดุ เช่น TikTok Shop, Shopee, Lazada, BEST Express, SPX, Flash, J&T, KEX) ที่แปะอยู่บนห่อสินค้า
+2. "TRUCK_CLOSING" = รูปถ่ายรถบรรทุกขนส่งที่เข้ามารับสินค้า, รูปท้ายตู้คอนเทนเนอร์/ตู้ทึบที่มีกล่องพัสดุเรียงอยู่ข้างใน, รูปประตูปิดตู้รถบรรทุก, หรือรูปถ่ายคู่กับสายซีลล็อกตู้สีเหลือง/พลาสติกล็อกตู้ (Seal Tag) เพื่อปิด Book งานขนส่ง
+3. "OTHER" = รูปอื่นๆ ที่ไม่ใช่ทั้งใบปะหน้าพัสดุและไม่ใช่รูปรถขนส่ง/ปิดตู้ (เช่น รูปถุงพลาสติกเปล่าๆ ที่ไม่มีใบปะหน้า, รูปสติกเกอร์การ์ตูน, รูปแชททั่วไป)
+
+รหัสสินค้าหลักของโรงงาน QueenCosy สำหรับช่วยสังเกตกรณีเป็น PARCEL_LABEL:
+${skuHintList}
+
+หากเป็น "PARCEL_LABEL" ให้สกัดข้อมูลใบปะหน้าพัสดุ:
+- trackingId (ตัวอักษร/ตัวเลขใต้บาร์โค้ดห้ามเว้นวรรค เช่น 6677..., SPXTH..., TH..., 82...)
+- orderId (เลขคำสั่งซื้อ เช่น 586..., 261...)
+- carrier (ชื่อขนส่ง เช่น BEST Express, Shopee Xpress (SPX), Flash Express, J&T Express, KEX Express)
+- platform (TikTok Shop, Shopee, Lazada, เพจร้าน)
+- customerName, province, sku, productName, qty
+
+หากเป็น "TRUCK_CLOSING" ให้สกัดข้อมูลรถขนส่งและซีลปิดตู้:
+- truckPlate: ป้ายทะเบียนรถ หรือรหัสข้างตู้รถ (เช่น "SW.9...", "70-1234" ถ้ามองเห็น)
+- sealNumber: เลขซีลล็อกตู้สีเหลือง/บาร์โค้ดบนสายล็อกตู้ (ถ้ามีในรูป)
+- carrier: ชื่อขนส่งของรถคันนั้น (ถ้าระบุหรือสังเกตได้ เช่น BEST Express, SPX, J&T, รถเหมาขนส่ง)
+- photoTimestamp: วันและเวลาที่พิมพ์อยู่มุมภาพ (Timestamp เช่น "5 พ.ย. 2569 11:21:22" ถ้ามี)
+- estimatedBoxesNote: ลักษณะการเรียงของในตู้ เช่น "เรียงกล่องโซฟาเต็มตู้", "ถ่ายคู่สายซีลสีเหลือง + ท้ายรถตู้ทึบ"
+
+ตอบกลับมาเป็น JSON Object เท่านั้น ตามโครงสร้างนี้:
+{
+  "imageCategory": "PARCEL_LABEL | TRUCK_CLOSING | OTHER",
+  "trackingId": "เลขพัสดุ (เฉพาะ PARCEL_LABEL)",
+  "orderId": "เลขคำสั่งซื้อ (เฉพาะ PARCEL_LABEL)",
+  "carrier": "ชื่อขนส่ง",
+  "platform": "Shopee | TikTok Shop | Lazada | เพจร้าน",
+  "customerName": "ชื่อผู้รับ",
+  "province": "จังหวัดปลายทาง",
+  "sku": "รหัส SKU / รุ่นสี",
+  "productName": "ชื่อสินค้า",
+  "qty": 1,
+  "truckPlate": "ทะเบียนรถหรือรหัสตู้ (เฉพาะ TRUCK_CLOSING)",
+  "sealNumber": "เลขซีลล็อกตู้สีเหลือง (เฉพาะ TRUCK_CLOSING)",
+  "photoTimestamp": "เวลาที่ปรากฏในภาพ (ถ้ามี)",
+  "estimatedBoxesNote": "คำอธิบายรูปรถขนส่ง/การปิดตู้ (เฉพาะ TRUCK_CLOSING)",
+  "confidence": "HIGH | MEDIUM | LOW",
+  "notes": "คำอธิบายเพิ่มเติม"
+}`;
+  }
+
+  async function classifyAndExtractLineImageWithGemini(base64Data, mimeType, apiKey, preferredModel) {
+    if (!apiKey) {
+      throw new Error('ยังไม่ได้ตั้งค่า Gemini API Key');
+    }
+    const cleanBase64 = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
+    const cleanMime = mimeType || 'image/jpeg';
+    const modelsToTry = [
+      preferredModel || DEFAULT_GEMINI_MODEL,
+      'gemini-flash-latest',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash'
+    ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+
+    const promptText = buildLineImageClassifierPrompt();
+    let lastError = null;
+
+    for (const model of modelsToTry) {
+      try {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: promptText },
+                  {
+                    inline_data: {
+                      mime_type: cleanMime,
+                      data: cleanBase64
+                    }
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: 'application/json'
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Gemini HTTP ${response.status}: ${errText.slice(0, 200)}`);
+        }
+
+        const json = await response.json();
+        const candidateText = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const parsed = extractJsonFromText(candidateText);
+        const category = String(parsed.imageCategory || 'PARCEL_LABEL').toUpperCase();
+
+        if (category === 'TRUCK_CLOSING') {
+          return {
+            imageCategory: 'TRUCK_CLOSING',
+            truckData: {
+              truckPlate: String(parsed.truckPlate || '').trim(),
+              sealNumber: String(parsed.sealNumber || '').trim(),
+              carrier: String(parsed.carrier || 'รถขนส่งเข้ารับสินค้า').trim(),
+              photoTimestamp: String(parsed.photoTimestamp || '').trim(),
+              estimatedBoxesNote: String(parsed.estimatedBoxesNote || parsed.notes || 'รูปรถขนส่ง/ปิดตู้').trim(),
+              confidence: parsed.confidence || 'HIGH'
+            }
+          };
+        }
+
+        if (category === 'OTHER') {
+          return {
+            imageCategory: 'OTHER',
+            notes: String(parsed.notes || 'รูปทั่วไปที่ไม่ใช่ใบปะหน้าพัสดุและไม่ใช่รูปรถขนส่ง').trim()
+          };
+        }
+
+        const labelData = normalizeExtractedLabelData(parsed);
+        return {
+          imageCategory: 'PARCEL_LABEL',
+          labelData
+        };
       } catch (err) {
         lastError = err;
       }
@@ -1234,6 +1378,8 @@ ${skuHintList}
         lineChannelId: labelCfg.lineChannelId || localCfg.lineChannelId || '',
         lineChannelSecret: labelCfg.lineChannelSecret || localCfg.lineChannelSecret || '',
         lineChannelAccessToken: labelCfg.lineChannelAccessToken || localCfg.lineChannelAccessToken || '',
+        lineBotPendingMode: labelCfg.lineBotPendingMode !== undefined ? Boolean(labelCfg.lineBotPendingMode) : true,
+        lineBotSilentMode: labelCfg.lineBotSilentMode !== undefined ? Boolean(labelCfg.lineBotSilentMode) : false,
         staffName: labelCfg.staffName || localCfg.staffName || 'ฝ่ายติดตามพัสดุ',
         adminPassword: labelCfg.adminPassword || localCfg.adminPassword || '1973'
       };
@@ -1689,14 +1835,16 @@ ${skuHintList}
     const bParcel = `QC_PARCEL_DATA_${targetDate}`;
     const bLabelOrders = `QC_LABEL_ORDERS_${targetDate}`;
     const bLabelScan = `QC_LABEL_SCAN_${targetDate}`;
+    const bTruckLog = `QC_TRUCK_LOG_${targetDate}`;
 
     let qrSystemOrders = [];
     let sameDateQrScans = [];
     let extraOrders = [];
     let labelScans = [];
+    let truckLogs = [];
 
     try {
-      const query = `production_batches?batch_id=in.(${encodeURIComponent(bParcel)},${encodeURIComponent(bLabelOrders)},${encodeURIComponent(bLabelScan)})&select=batch_id,items_json,updated_at,imported_by`;
+      const query = `production_batches?batch_id=in.(${encodeURIComponent(bParcel)},${encodeURIComponent(bLabelOrders)},${encodeURIComponent(bLabelScan)},${encodeURIComponent(bTruckLog)})&select=batch_id,items_json,updated_at,imported_by`;
       const [res, crossData] = await Promise.all([
         supabaseRequest(query, { method: 'GET' }, customUrl, customKey),
         fetchCrossDateScansFromCloud(customUrl, customKey)
@@ -1717,6 +1865,8 @@ ${skuHintList}
               extraOrders = Array.isArray(parsed.orders) ? parsed.orders : [];
             } else if (row.batch_id === bLabelScan) {
               labelScans = Array.isArray(parsed.scans) ? parsed.scans : [];
+            } else if (row.batch_id === bTruckLog) {
+              truckLogs = Array.isArray(parsed.trucks) ? parsed.trucks : [];
             }
           }
         }
@@ -1747,6 +1897,7 @@ ${skuHintList}
         orders: mergedOrders,
         qrScans: combinedQrScans,
         labelScans: cleanLabelScans,
+        truckLogs,
         reconciled
       };
 
@@ -1765,6 +1916,7 @@ ${skuHintList}
         orders: mergedOrders,
         qrScans: lookupSameDateQrScans,
         labelScans: cleanLabelScans,
+        truckLogs,
         reconciled
       };
     }
@@ -1839,6 +1991,11 @@ ${skuHintList}
       duplicateHistory = [...baseHist, { time: nowTime, sender: senderName, fileName: options.fileName || '' }];
     }
 
+    const defaultApproval = options.approvalStatus || (sourceChannel === 'LINE_GROUP' ? 'PENDING_LINE' : 'APPROVED');
+    const resolvedApproval = existingScan && existingScan.approvalStatus === 'APPROVED'
+      ? 'APPROVED'
+      : defaultApproval;
+
     const newScanObj = {
       id: scanId,
       scanDate: effectiveScanDate,
@@ -1846,6 +2003,7 @@ ${skuHintList}
       firstScanTime: firstScanTime,
       duplicateCount: newDupCount,
       duplicateHistory: duplicateHistory,
+      approvalStatus: resolvedApproval,
       fileName: options.fileName || (existingScan ? existingScan.fileName : '') || '',
       trackingId: cleanTrk || (matched.order ? matched.order.trackingId : '') || '',
       cleanTracking: cleanTrk || (matched.order ? normalizeTracking(matched.order.trackingId) : '') || '',
@@ -1900,6 +2058,147 @@ ${skuHintList}
       matchedOrder: matched.order,
       matchedQrScan: matched.qrScan
     };
+  }
+
+  /**
+   * Approves one or multiple Pending LINE Label Scans so they immediately appear on Tab 1 Dashboard
+   */
+  async function approvePendingLineScans(date, scanIds = [], approvedBy = 'แอดมิน', customUrl, customKey) {
+    const targetDate = date || getTodayString();
+    const dailyData = await syncDailyDataFromCloud(targetDate, customUrl, customKey);
+    const idSet = new Set(Array.isArray(scanIds) ? scanIds : []);
+    const approveAll = idSet.size === 0;
+    const nowIso = new Date().toISOString();
+
+    const updatedScans = (dailyData.labelScans || []).map((s) => {
+      if (!s) return s;
+      if (s.approvalStatus === 'PENDING_LINE' && (approveAll || idSet.has(s.id))) {
+        return Object.assign({}, s, {
+          approvalStatus: 'APPROVED',
+          approvedBy: approvedBy,
+          approvedAt: nowIso
+        });
+      }
+      return s;
+    });
+
+    await saveLabelScansToCloud(targetDate, updatedScans, approvedBy, customUrl, customKey);
+    return updatedScans;
+  }
+
+  /**
+   * Truck Pickup & Container Closing Log (`QC_TRUCK_LOG_<date>`)
+   * Separates truck/seal photos sent in LINE Group from parcel labels, and counts daily pickup trucks!
+   */
+  async function saveTruckLogsToCloud(date, truckLogs = [], updatedBy = 'ระบบ LINE Bot', customUrl, customKey) {
+    const targetDate = date || getTodayString();
+    const slimTrucks = (Array.isArray(truckLogs) ? truckLogs : []).map((t) => {
+      const hasImg = Boolean(t.hasCloudImage || t.imageDataUrl);
+      if (t.imageDataUrl && t.id) {
+        memoryImageCache.set(t.id, t.imageDataUrl);
+        idbSet('images', t.id, t.imageDataUrl);
+      }
+      return Object.assign({}, t, {
+        logDate: t.logDate || targetDate,
+        imageDataUrl: '',
+        hasCloudImage: hasImg
+      });
+    });
+
+    try {
+      const payload = {
+        batch_id: `QC_TRUCK_LOG_${targetDate}`,
+        batch_name: `Truck Pickup & Closing Log ${targetDate}`,
+        source: 'QC_TRUCK_LOG',
+        status: 'COMPLETED',
+        total_skus: slimTrucks.length,
+        total_units: slimTrucks.length,
+        total_material_cost: 0,
+        imported_by: updatedBy,
+        items_json: {
+          date: targetDate,
+          trucks: slimTrucks,
+          updatedAt: new Date().toISOString(),
+          updatedBy: updatedBy
+        },
+        updated_at: new Date().toISOString()
+      };
+
+      const res = await supabaseRequest(
+        'production_batches?on_conflict=batch_id',
+        {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify(payload)
+        },
+        customUrl,
+        customKey
+      );
+      return res.ok;
+    } catch (e) {
+      console.warn('saveTruckLogsToCloud error:', e);
+      return false;
+    }
+  }
+
+  async function recordIncomingTruckLog(truckData = {}, imageDataUrl = '', options = {}, customUrl, customKey) {
+    const targetDate = options.date || getTodayString();
+    const senderName = options.senderName || 'กลุ่ม LINE รายงานขนส่ง';
+    const sourceChannel = options.sourceChannel || 'LINE_GROUP';
+    const dailyData = await syncDailyDataFromCloud(targetDate, customUrl, customKey);
+    const existingTrucks = Array.isArray(dailyData.truckLogs) ? dailyData.truckLogs : [];
+
+    const truckId = `TRKLOG-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
+    const nowTime = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 19);
+
+    const newTruckObj = {
+      id: truckId,
+      logDate: targetDate,
+      logTime: nowTime,
+      truckNumberOrder: existingTrucks.length + 1,
+      carrier: truckData.carrier || 'รถขนส่งเข้ารับสินค้า',
+      truckPlate: truckData.truckPlate || '',
+      sealNumber: truckData.sealNumber || '',
+      photoTimestamp: truckData.photoTimestamp || '',
+      estimatedBoxesNote: truckData.estimatedBoxesNote || 'รูปรถขนส่ง / ปิดตู้ขนส่ง',
+      sourceChannel: sourceChannel,
+      senderName: senderName,
+      approvalStatus: options.approvalStatus || 'APPROVED',
+      hasCloudImage: Boolean(imageDataUrl),
+      createdAt: new Date().toISOString()
+    };
+
+    if (imageDataUrl) {
+      await saveLabelImageToCloud(truckId, imageDataUrl, {
+        trackingId: newTruckObj.truckPlate || newTruckObj.sealNumber || 'TRUCK',
+        orderId: newTruckObj.carrier,
+        scanDate: targetDate
+      }, customUrl, customKey);
+    }
+
+    const updatedTrucks = [newTruckObj, ...existingTrucks];
+    await saveTruckLogsToCloud(targetDate, updatedTrucks, senderName, customUrl, customKey);
+
+    return {
+      truckLog: newTruckObj,
+      totalTrucksToday: updatedTrucks.length,
+      targetDate
+    };
+  }
+
+  async function deleteTruckLogFromCloud(date, truckId, updatedBy = 'แอดมิน', customUrl, customKey) {
+    const targetDate = date || getTodayString();
+    if (!truckId) return false;
+    try {
+      await deleteLabelImageFromCloud(truckId, customUrl, customKey);
+      const dailyData = await syncDailyDataFromCloud(targetDate, customUrl, customKey);
+      const existingTrucks = Array.isArray(dailyData.truckLogs) ? dailyData.truckLogs : [];
+      const filtered = existingTrucks.filter((t) => t && t.id !== truckId);
+      await saveTruckLogsToCloud(targetDate, filtered, updatedBy, customUrl, customKey);
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -2966,6 +3265,7 @@ ${skuHintList}
     deduplicateLabelScans,
     reconcileThreeWayStatus,
     scanLabelImageWithGemini,
+    classifyAndExtractLineImageWithGemini,
     normalizeExtractedLabelData,
     getLocalConfig,
     saveLocalConfig,
@@ -2980,6 +3280,10 @@ ${skuHintList}
     deleteLabelImageFromCloud,
     syncDailyDataFromCloud,
     recordIncomingLabelScan,
+    approvePendingLineScans,
+    saveTruckLogsToCloud,
+    recordIncomingTruckLog,
+    deleteTruckLogFromCloud,
     fetchMultiDayDataFromCloud,
     parseOrderRows,
     parseCarrierStatusRows,
