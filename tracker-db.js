@@ -1338,35 +1338,54 @@ ${skuHintList}
     });
 
     try {
-      const payload = {
-        batch_id: `QC_LABEL_SCAN_${targetDate}`,
-        batch_name: `Parcel Label Scans ${targetDate}`,
-        source: 'QC_LABEL_SCAN',
-        status: 'COMPLETED',
-        total_skus: slimScans.length,
-        total_units: slimScans.reduce((sum, x) => sum + (parseInt(x.qty, 10) || 1), 0),
-        total_material_cost: 0,
-        imported_by: updatedBy,
-        items_json: {
-          date: targetDate,
-          scans: slimScans,
-          updatedAt: new Date().toISOString(),
-          updatedBy: updatedBy
-        },
-        updated_at: new Date().toISOString()
-      };
+      // Group scans by their scanDate so continuous cross-day edits save back to their original batch cleanly
+      const byDate = new Map();
+      byDate.set(targetDate, []);
+      slimScans.forEach((s) => {
+        const dKey = s.scanDate || targetDate;
+        if (!byDate.has(dKey)) byDate.set(dKey, []);
+        byDate.get(dKey).push(s);
+      });
 
-      const res = await supabaseRequest(
-        'production_batches?on_conflict=batch_id',
-        {
-          method: 'POST',
-          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(payload)
-        },
-        customUrl,
-        customKey
-      );
-      return res.ok;
+      const requests = [];
+      for (const [dKey, dateScans] of byDate.entries()) {
+        // Only write other dates if they actually have scans in slimScans, and always write targetDate
+        if (dKey !== targetDate && dateScans.length === 0) continue;
+        const payload = {
+          batch_id: `QC_LABEL_SCAN_${dKey}`,
+          batch_name: `Parcel Label Scans ${dKey}`,
+          source: 'QC_LABEL_SCAN',
+          status: 'COMPLETED',
+          total_skus: dateScans.length,
+          total_units: dateScans.reduce((sum, x) => sum + (parseInt(x.qty, 10) || 1), 0),
+          total_material_cost: 0,
+          imported_by: updatedBy,
+          items_json: {
+            date: dKey,
+            scans: dateScans,
+            updatedAt: new Date().toISOString(),
+            updatedBy: updatedBy
+          },
+          updated_at: new Date().toISOString()
+        };
+
+        requests.push(
+          supabaseRequest(
+            'production_batches?on_conflict=batch_id',
+            {
+              method: 'POST',
+              headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+              body: JSON.stringify(payload)
+            },
+            customUrl,
+            customKey
+          )
+        );
+      }
+
+      const results = await Promise.all(requests);
+      cachedCrossDateData.fetchedAt = 0;
+      return results.every((r) => r.ok);
     } catch (e) {
       console.warn('saveLabelScansToCloud error:', e);
       return false;
@@ -1418,41 +1437,104 @@ ${skuHintList}
   }
 
   /**
-   * Deletes daily data (extra orders and/or label scans & images) for a given date.
+   * Deletes uploaded orders and/or label scans & images in parcel-label-tracker.
    * Never touches QC_PARCEL_DATA_<date> from daily-parcel-checker.
    */
   async function deleteDailyDataFromCloud(date, options = { clearOrders: true, clearLabelScans: true }, scanIdsToDelete = [], customUrl, customKey) {
     const targetDate = date || getTodayString();
-    const batchesToRemove = [];
-    if (options.clearOrders) {
-      batchesToRemove.push(`QC_LABEL_ORDERS_${targetDate}`);
-    }
-    if (options.clearLabelScans) {
-      batchesToRemove.push(`QC_LABEL_SCAN_${targetDate}`);
-      if (Array.isArray(scanIdsToDelete)) {
-        scanIdsToDelete.forEach((id) => {
-          if (id) {
-            batchesToRemove.push(`QC_LABEL_IMG_${id}`);
-            memoryImageCache.delete(id);
-          }
-        });
-      }
-    }
-
-    if (batchesToRemove.length === 0) return true;
     try {
-      const inList = batchesToRemove.map((b) => encodeURIComponent(b)).join(',');
+      const requests = [];
+      if (options.clearOrders) {
+        requests.push(
+          supabaseRequest(
+            'production_batches?batch_id=like.QC_LABEL_ORDERS_*',
+            { method: 'DELETE' },
+            customUrl,
+            customKey
+          )
+        );
+      }
+      if (options.clearLabelScans) {
+        if (Array.isArray(scanIdsToDelete)) {
+          scanIdsToDelete.forEach((id) => {
+            if (id) memoryImageCache.delete(id);
+          });
+        }
+        requests.push(
+          supabaseRequest(
+            'production_batches?or=(batch_id.like.QC_LABEL_SCAN_*,batch_id.like.QC_LABEL_IMG_*)',
+            { method: 'DELETE' },
+            customUrl,
+            customKey
+          )
+        );
+      }
+
+      if (requests.length === 0) return true;
+      await Promise.all(requests);
+      cachedCrossDateData = { fetchedAt: 0, qrScans: [], labelScans: [], extraOrders: [] };
+      await idbSet('daily_state', targetDate, null);
+      return true;
+    } catch (e) {
+      console.warn('deleteDailyDataFromCloud error:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Deletes a single label scan and/or single order across QC_LABEL_SCAN_* and QC_LABEL_ORDERS_* batches
+   * without touching QC_PARCEL_DATA_*.
+   */
+  async function deleteSingleItemFromCloud(payload = {}, updatedBy = 'แอดมิน', customUrl, customKey) {
+    const { scanId, cleanTracking, cleanOrderId } = payload;
+    try {
+      if (scanId) {
+        await deleteLabelImageFromCloud(scanId, customUrl, customKey);
+      }
       const res = await supabaseRequest(
-        `production_batches?batch_id=in.(${inList})`,
-        { method: 'DELETE' },
+        'production_batches?or=(batch_id.like.QC_LABEL_SCAN_*,batch_id.like.QC_LABEL_ORDERS_*)&select=batch_id,items_json',
+        { method: 'GET' },
         customUrl,
         customKey
       );
-      cachedCrossDateData.fetchedAt = 0;
-      await idbSet('daily_state', targetDate, null);
-      return res.ok;
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const bid = String(row.batch_id || '');
+            const parsed = typeof row.items_json === 'string'
+              ? JSON.parse(row.items_json || '{}')
+              : (row.items_json || {});
+
+            if (scanId && bid.startsWith('QC_LABEL_SCAN_')) {
+              const batchDate = bid.replace('QC_LABEL_SCAN_', '');
+              const scans = Array.isArray(parsed.scans) ? parsed.scans : [];
+              const filtered = scans.filter((s) => s && s.id !== scanId);
+              if (filtered.length !== scans.length) {
+                await saveLabelScansToCloud(batchDate, filtered, updatedBy, customUrl, customKey);
+              }
+            } else if ((cleanTracking || cleanOrderId) && bid.startsWith('QC_LABEL_ORDERS_')) {
+              const batchDate = bid.replace('QC_LABEL_ORDERS_', '');
+              const ords = Array.isArray(parsed.orders) ? parsed.orders : [];
+              const filtered = ords.filter((o) => {
+                if (!o) return false;
+                const oTrk = normalizeTracking(o.cleanTracking || o.trackingId || '');
+                const oOrd = normalizeOrderId(o.orderId || '');
+                if (cleanTracking && oTrk === cleanTracking) return false;
+                if (cleanOrderId && oOrd === cleanOrderId) return false;
+                return true;
+              });
+              if (filtered.length !== ords.length) {
+                await saveExtraOrdersToCloud(batchDate, filtered, updatedBy, customUrl, customKey);
+              }
+            }
+          }
+        }
+      }
+      cachedCrossDateData = { fetchedAt: 0, qrScans: [], labelScans: [], extraOrders: [] };
+      return true;
     } catch (e) {
-      console.warn('deleteDailyDataFromCloud error:', e);
+      console.warn('deleteSingleItemFromCloud error:', e);
       return false;
     }
   }
@@ -1596,12 +1678,10 @@ ${skuHintList}
         }
       }
 
-      // Strictly use ONLY orders saved for this targetDate (QC_LABEL_ORDERS_<targetDate>)
-      // so daily order counts match the uploaded daily file 100% without scattering or cross-day mixing.
-      const mergedOrders = deduplicateOrderArray(extraOrders);
-
-      // Only include label photos saved for this targetDate
-      const cleanLabelScans = deduplicateLabelScans(labelScans);
+      // Carry forward all uploaded orders (QC_LABEL_ORDERS_*) and label photos (QC_LABEL_SCAN_*) continuously across days
+      // so orders uploaded on Nov 2 (500+ orders) continue to display and reconcile on Nov 3, Nov 4, Nov 5, etc.
+      const mergedOrders = deduplicateOrderArray([...(crossData.extraOrders || []), ...extraOrders]);
+      const cleanLabelScans = deduplicateLabelScans([...(crossData.labelScans || []), ...labelScans]);
 
       // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker strictly as a lookup reference
       // (so they match against this system's orders & label photos without adding unrelated rows when orders are deleted)
@@ -1619,7 +1699,7 @@ ${skuHintList}
       const result = {
         date: targetDate,
         qrSystemOrders,
-        extraOrders,
+        extraOrders: mergedOrders,
         orders: mergedOrders,
         qrScans: combinedQrScans,
         labelScans: cleanLabelScans,
@@ -2834,6 +2914,7 @@ ${skuHintList}
     saveLabelScansToCloud,
     saveExtraOrdersToCloud,
     deleteDailyDataFromCloud,
+    deleteSingleItemFromCloud,
     deleteLabelImageFromCloud,
     syncDailyDataFromCloud,
     recordIncomingLabelScan,

@@ -1611,8 +1611,6 @@
             if (state.selectedScanId === p.scanId) {
               state.selectedScanId = state.labelScans[0]?.id || '';
             }
-            await TrackerDB.saveLabelScansToCloud(state.activeDate, state.labelScans, state.config.staffName);
-            await TrackerDB.deleteLabelImageFromCloud(p.scanId);
           }
           if (p.cleanTracking || p.cleanOrderId) {
             state.extraOrders = state.extraOrders.filter((o) => {
@@ -1620,8 +1618,8 @@
               if (p.cleanOrderId && o.cleanOrderId === p.cleanOrderId) return false;
               return true;
             });
-            await TrackerDB.saveExtraOrdersToCloud(state.activeDate, state.extraOrders, state.config.staffName);
           }
+          await TrackerDB.deleteSingleItemFromCloud(p, state.config.staffName);
 
           modal?.classList.add('hidden');
           await refreshActiveDateData(false);
