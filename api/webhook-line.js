@@ -14,14 +14,17 @@
  */
 const TrackerDB = require('../tracker-db.js');
 
+const DEFAULT_LINE_CHANNEL_ID = '2012237600';
+const DEFAULT_LINE_CHANNEL_SECRET = '2964f7649d6233a5460a866f21f5b64b';
+
 async function resolveLineAccessToken(cloudCfg, forceRefresh = false) {
   if (!forceRefresh) {
     const existing = process.env.LINE_CHANNEL_ACCESS_TOKEN || cloudCfg.lineChannelAccessToken || '';
     if (existing) return existing;
   }
 
-  const clientId = process.env.LINE_CHANNEL_ID || cloudCfg.lineChannelId || '';
-  const clientSecret = process.env.LINE_CHANNEL_SECRET || cloudCfg.lineChannelSecret || '';
+  const clientId = process.env.LINE_CHANNEL_ID || cloudCfg.lineChannelId || DEFAULT_LINE_CHANNEL_ID;
+  const clientSecret = process.env.LINE_CHANNEL_SECRET || cloudCfg.lineChannelSecret || DEFAULT_LINE_CHANNEL_SECRET;
   if (!clientId || !clientSecret) return process.env.LINE_CHANNEL_ACCESS_TOKEN || cloudCfg.lineChannelAccessToken || '';
 
   try {
@@ -215,10 +218,12 @@ module.exports = async function handler(req, res) {
         // -------------------------------------------------------------------
         // SUBCASE 1C: PARCEL SHIPPING LABEL PHOTO (รูปใบปะหน้าพัสดุ)
         // -------------------------------------------------------------------
-        const extracted = classified.labelData;
+        const extracted = classified.labelData || {};
+        // Extra safety guard: if AI could not read any valid trackingId AND no valid orderId,
+        // only record it in Pending queue if it actually looks like a shipping label; never pollute main counts!
         const recordResult = await TrackerDB.recordIncomingLabelScan(extracted, imageDataUrl, {
           sourceChannel: 'LINE_GROUP',
-          senderName: 'กลุ่ม LINE ส่งรูปพัสดุ',
+          senderName: 'กลุ่ม LINE รายงานขนส่ง',
           approvalStatus: lineApprovalMode
         });
 
