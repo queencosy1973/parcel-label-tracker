@@ -130,6 +130,141 @@
     return `${d} ${thaiMonths[m] || ''} ${beYear}`;
   }
 
+  function normalizeYearToCE(rawYearNum) {
+    let y = parseInt(rawYearNum, 10);
+    if (isNaN(y)) return new Date().getFullYear();
+    if (y > 200000) {
+      // Fix typo like 202569 -> 2569
+      y = parseInt(String(y).slice(-4), 10);
+    }
+    if (y >= 2400) {
+      return y - 543; // 4-digit Buddhist Era (e.g. 2569 -> 2026)
+    }
+    if (y >= 1900 && y < 2400) {
+      return y; // 4-digit Christian Era (e.g. 2026 -> 2026)
+    }
+    if (y >= 60 && y <= 99) {
+      return y + 2500 - 543; // 2-digit Buddhist Era (e.g. 69 -> 2569 -> 2026)
+    }
+    if (y >= 0 && y < 60) {
+      return y + 2000; // 2-digit Christian Era (e.g. 26 -> 2026)
+    }
+    return y;
+  }
+
+  /**
+   * Smart Auto-Date Detector from Filename or Sheet Name (supports both พ.ศ. and ค.ศ.)
+   * Examples supported:
+   *  - "3.11.69.xlsx", "คำสั่งซื้อ 3.11.69.xlsx", "03.11.2569.xlsx" -> "2026-11-03"
+   *  - "3.11.26.xlsx", "03-11-2026.csv", "3_11_69.xlsx" -> "2026-11-03"
+   *  - "2026-11-03.xlsx", "2569-11-03.xlsx" -> "2026-11-03"
+   *  - "3 พ.ย. 69", "3 พฤศจิกายน 2569" -> "2026-11-03"
+   */
+  function extractDateFromFilename(filename) {
+    if (!filename) return null;
+    // Strip common file extensions first
+    const cleanName = String(filename)
+      .trim()
+      .replace(/\.(xlsx|xls|csv|txt|jpg|jpeg|png|webp)$/i, '');
+
+    // Pattern 1: YYYY-MM-DD or YYYY.MM.DD or YYYY_MM_DD (4-digit year first, CE or BE)
+    const mYMD = cleanName.match(/(?:^|[^\d])(20\d{2}|25\d{2})[\.\-_\/](\d{1,2})[\.\-_\/](\d{1,2})(?:$|[^\d])/);
+    if (mYMD) {
+      const y = normalizeYearToCE(mYMD[1]);
+      const m = parseInt(mYMD[2], 10);
+      const d = parseInt(mYMD[3], 10);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+
+    // Pattern 2: D.M.YY or DD.MM.YYYY or D-M-YY or D_M_YY (e.g. 3.11.69, 3.11.2569, 3.11.26, 3.11.2026, 2.10.202569)
+    const mDMY = cleanName.match(/(?:^|[^\d])(\d{1,2})[\.\-_\/](\d{1,2})[\.\-_\/](\d{2,6})(?:$|[^\d])/);
+    if (mDMY) {
+      const d = parseInt(mDMY[1], 10);
+      const m = parseInt(mDMY[2], 10);
+      const y = normalizeYearToCE(mDMY[3]);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 2020 && y <= 2040) {
+        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+
+    // Pattern 3: Thai month names (e.g. "3 พ.ย. 69", "3 พย 2569", "3 พฤศจิกายน 2026")
+    const thaiMonthMap = [
+      { m: 1, kws: ['ม.ค.', 'มค', 'มกรา'] },
+      { m: 2, kws: ['ก.พ.', 'กพ', 'กุมภา'] },
+      { m: 3, kws: ['มี.ค.', 'มีค', 'มีนา'] },
+      { m: 4, kws: ['เม.ย.', 'เมย', 'เมษา'] },
+      { m: 5, kws: ['พ.ค.', 'พค', 'พฤษภา'] },
+      { m: 6, kws: ['มิ.ย.', 'มิย', 'มิถุนา'] },
+      { m: 7, kws: ['ก.ค.', 'กค', 'กรกฎา'] },
+      { m: 8, kws: ['ส.ค.', 'สค', 'สิงหา'] },
+      { m: 9, kws: ['ก.ย.', 'กย', 'กันยา'] },
+      { m: 10, kws: ['ต.ค.', 'ตค', 'ตุลา'] },
+      { m: 11, kws: ['พ.ย.', 'พย', 'พฤศจิกา'] },
+      { m: 12, kws: ['ธ.ค.', 'ธค', 'ธันวา'] }
+    ];
+    for (const tm of thaiMonthMap) {
+      for (const kw of tm.kws) {
+        const escapedKw = kw.replace(/\./g, '\\.');
+        const re = new RegExp(`(\\d{1,2})\\s*${escapedKw}[\\S\\s]{0,6}?(\\d{2,4})`);
+        const match = cleanName.match(re);
+        if (match) {
+          const d = parseInt(match[1], 10);
+          const y = normalizeYearToCE(match[2]);
+          if (d >= 1 && d <= 31 && y >= 2020 && y <= 2040) {
+            return `${y}-${String(tm.m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function parseDateCell(cellVal) {
+    if (cellVal === null || cellVal === undefined || cellVal === '') return '';
+    // Excel serial date number (e.g. 46000)
+    if (typeof cellVal === 'number' && cellVal > 35000 && cellVal < 65000) {
+      const utcDays = Math.floor(cellVal - 25569);
+      const dt = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(dt.getTime())) {
+        let y = dt.getUTCFullYear();
+        if (y >= 2400) y -= 543;
+        const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(dt.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      }
+    }
+
+    const str = String(cellVal).trim();
+    if (!str) return '';
+
+    // YYYY-MM-DD or YYYY/MM/DD
+    const ym = str.match(/^(\d{4})[\/\-\.](\d{1,2})[\/\-\.](\d{1,2})/);
+    if (ym) {
+      const y = normalizeYearToCE(ym[1]);
+      const m = parseInt(ym[2], 10);
+      const d = parseInt(ym[3], 10);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+
+    // DD/MM/YYYY or D.M.YY or DD-MM-YYYY
+    const dm = str.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})/);
+    if (dm) {
+      const d = parseInt(dm[1], 10);
+      const m = parseInt(dm[2], 10);
+      const y = normalizeYearToCE(dm[3]);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 2020 && y <= 2040) {
+        return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      }
+    }
+
+    return extractDateFromFilename(str) || '';
+  }
+
   function normalizeTracking(str) {
     if (!str) return '';
     return String(str)
@@ -1339,20 +1474,21 @@ ${skuHintList}
     }
   }
 
-  // Cache for cross-date QR scans & label scans so repeated syncs are instant (< 0.2s)
+  // Cache for cross-date QR scans, label scans & weekly uploaded orders so repeated syncs are instant (< 0.2s)
   let cachedCrossDateData = {
     fetchedAt: 0,
     qrScans: [],
-    labelScans: []
+    labelScans: [],
+    extraOrders: []
   };
 
   async function fetchCrossDateScansFromCloud(customUrl, customKey) {
     const now = Date.now();
-    if (now - cachedCrossDateData.fetchedAt < 12000 && cachedCrossDateData.qrScans.length > 0) {
+    if (now - cachedCrossDateData.fetchedAt < 12000 && (cachedCrossDateData.qrScans.length > 0 || cachedCrossDateData.extraOrders.length > 0)) {
       return cachedCrossDateData;
     }
     try {
-      const query = 'production_batches?or=(batch_id.like.QC_PARCEL_DATA_*,batch_id.like.QC_LABEL_SCAN_*)&select=batch_id,items_json,updated_at&order=updated_at.desc&limit=35';
+      const query = 'production_batches?or=(batch_id.like.QC_PARCEL_DATA_*,batch_id.like.QC_LABEL_SCAN_*,batch_id.like.QC_LABEL_ORDERS_*)&select=batch_id,items_json,updated_at&order=updated_at.desc&limit=60';
       const res = await supabaseRequest(query, { method: 'GET' }, customUrl, customKey);
       if (!res.ok) return cachedCrossDateData;
       const rows = await res.json();
@@ -1360,6 +1496,7 @@ ${skuHintList}
 
       const allQrScans = [];
       const allLabelScans = [];
+      const allExtraOrders = [];
       const seenQrTrackings = new Set();
 
       for (const row of rows) {
@@ -1387,13 +1524,24 @@ ${skuHintList}
           for (const ls of scans) {
             if (ls) allLabelScans.push(ls);
           }
+        } else if (bid.startsWith('QC_LABEL_ORDERS_')) {
+          const batchDate = bid.replace('QC_LABEL_ORDERS_', '');
+          const ords = Array.isArray(parsed.orders) ? parsed.orders : [];
+          for (const o of ords) {
+            if (o) {
+              allExtraOrders.push(Object.assign({}, o, {
+                shipDate: o.shipDate || batchDate
+              }));
+            }
+          }
         }
       }
 
       cachedCrossDateData = {
         fetchedAt: now,
         qrScans: allQrScans,
-        labelScans: deduplicateLabelScans(allLabelScans)
+        labelScans: deduplicateLabelScans(allLabelScans),
+        extraOrders: deduplicateOrderArray(allExtraOrders)
       };
       return cachedCrossDateData;
     } catch (e) {
@@ -1403,10 +1551,11 @@ ${skuHintList}
   }
 
   /**
-   * Fetches all 3 cloud rows for a given date AND cross-date QR scans from daily-parcel-checker:
+   * Fetches all 3 cloud rows for a given date AND cross-date QR scans / weekly orders:
    * - QC_PARCEL_DATA_<date>   (Read-Only from daily-parcel-checker: orders + QR scans)
    * - QC_PARCEL_DATA_*        (Cross-date QR scans so orders from 30/10 scanned on 31/10 or 02/11 always match!)
    * - QC_LABEL_ORDERS_<date>  (Orders imported directly into parcel-label-tracker)
+   * - QC_LABEL_ORDERS_*       (Cross-date weekly orders so a label photo taken today matches any order uploaded for the week)
    * - QC_LABEL_SCAN_<date>    (Label photo scans + follow-up tracking statuses)
    */
   async function syncDailyDataFromCloud(date, customUrl, customKey) {
@@ -1447,12 +1596,37 @@ ${skuHintList}
         }
       }
 
-      // Use ONLY orders imported/saved in parcel-label-tracker (extraOrders) so deleting orders clears 100% cleanly
-      // without dumping thousands of old accumulated orders from daily-parcel-checker onto the dashboard.
-      const mergedOrders = deduplicateOrderArray(extraOrders);
-
       // Only include label photos saved for this targetDate
       const cleanLabelScans = deduplicateLabelScans(labelScans);
+
+      // Build same-date orders first; also check if any label photo on targetDate matches an order from another date in the week's uploaded QC_LABEL_ORDERS_*
+      const sameDateOrders = deduplicateOrderArray(extraOrders);
+      const sameDateTrkSet = new Set(sameDateOrders.map((o) => normalizeTracking(o.cleanTracking || o.trackingId || '')).filter(Boolean));
+      const sameDateOrdSet = new Set(sameDateOrders.map((o) => normalizeOrderId(o.orderId || '')).filter(Boolean));
+
+      const crossMatchedOrders = [];
+      const allWeeklyOrders = Array.isArray(crossData.extraOrders) ? crossData.extraOrders : [];
+      if (cleanLabelScans.length > 0 && allWeeklyOrders.length > 0) {
+        cleanLabelScans.forEach((ls) => {
+          const trk = normalizeTracking(ls.cleanTracking || ls.trackingId || '');
+          const ord = normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
+          if ((trk && sameDateTrkSet.has(trk)) || (ord && sameDateOrdSet.has(ord))) return;
+
+          const matchedCross = allWeeklyOrders.filter((co) => {
+            const cTrk = normalizeTracking(co.cleanTracking || co.trackingId || '');
+            const cOrd = normalizeOrderId(co.orderId || '');
+            if (trk && cTrk && trk === cTrk) return true;
+            if (ord && cOrd && ord === cOrd) return true;
+            if (ord && ord.length >= 10 && cOrd && cOrd.length >= 10 && ord.slice(-8) === cOrd.slice(-8)) return true;
+            return false;
+          });
+          if (matchedCross.length > 0) {
+            crossMatchedOrders.push(...matchedCross);
+          }
+        });
+      }
+
+      const mergedOrders = deduplicateOrderArray([...sameDateOrders, ...crossMatchedOrders]);
 
       // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker strictly as a lookup reference
       // (so they match against this system's orders & label photos without adding unrelated rows when orders are deleted)
@@ -1624,9 +1798,9 @@ ${skuHintList}
   // 6. EXCEL / CSV PARSERS (ORDERS & CARRIER FOLLOW-UP STATUS BULK UPDATE)
   // ===========================================================================
 
-  function parseOrderRows(rows, targetDate) {
+  function parseOrderRows(rows, targetDate, forceTargetDate = false) {
     if (!Array.isArray(rows) || rows.length === 0) return [];
-    const shipDate = targetDate || getTodayString();
+    const fallbackDate = targetDate || getTodayString();
 
     // Find header row within first 10 rows
     let headerIdx = 0;
@@ -1662,6 +1836,7 @@ ${skuHintList}
 
     const idxTrack = findCol(['หมายเลขติดตามพัสดุ', 'tracking', 'เลขพัสดุ', 'เลขติดตาม', 'waybill'], ['วัน', 'date', 'เวลา']);
     const idxOrder = findCol(['หมายเลขคำสั่งซื้อ', 'order id', 'รหัสคำสั่งซื้อ', 'order sn', 'order no', 'คำสั่งซื้อ', 'เลขออเดอร์'], ['วัน', 'date', 'status', 'สถานะ', 'tracking']);
+    const idxDate = findCol(['วันที่ส่ง', 'วันที่จัดส่ง', 'วันที่สั่งซื้อ', 'วันที่', 'ship date', 'order date', 'date'], ['tracking', 'order id']);
     const idxSku = findCol(['seller sku', 'เลขอ้างอิง sku', 'รหัสสินค้า', 'sku', 'ชื่อสินค้า', 'product name'], ['quantity', 'จำนวน']);
     const idxVar = findCol(['ชื่อตัวเลือก', 'variation', 'ตัวเลือก', 'สี', 'ขนาด']);
     const idxQty = findCol(['จำนวน', 'quantity', 'qty'], ['คืน', 'ยกเลิก', 'return', 'cancel']);
@@ -1679,6 +1854,7 @@ ${skuHintList}
 
       let rawTrack = idxTrack !== -1 ? String(row[idxTrack] || '').trim() : '';
       let rawOrder = idxOrder !== -1 ? String(row[idxOrder] || '').trim() : '';
+      let rawDateCell = idxDate !== -1 ? row[idxDate] : '';
       let rawSku = idxSku !== -1 ? String(row[idxSku] || '').trim() : '';
       const rawVar = idxVar !== -1 ? String(row[idxVar] || '').trim() : '';
       const rawQty = idxQty !== -1 ? parseInt(row[idxQty], 10) || 1 : 1;
@@ -1687,6 +1863,18 @@ ${skuHintList}
       const rawProvince = idxProvince !== -1 ? String(row[idxProvince] || '').trim() : '';
       const rawPlatform = idxPlatform !== -1 ? String(row[idxPlatform] || '').trim() : '';
       const rawStatus = idxStatus !== -1 ? String(row[idxStatus] || '').trim() : '';
+
+      // Skip instructional / template description rows (e.g. TikTok row 2 descriptions)
+      const lowerOrd = rawOrder.toLowerCase();
+      const lowerTrk = rawTrack.toLowerCase();
+      if (
+        lowerOrd.includes('unique order id') ||
+        lowerOrd.includes('platform unique') ||
+        lowerTrk.includes('tracking number') ||
+        lowerTrk.includes("order's tracking")
+      ) {
+        continue;
+      }
 
       // Heuristic fallback if header wasn't standard
       if (idxTrack === -1 && idxOrder === -1) {
@@ -1710,10 +1898,12 @@ ${skuHintList}
 
       const cleanTrk = normalizeTracking(rawTrack);
       const isCancelled = rawStatus.includes('ยกเลิก') || rawStatus.toLowerCase().includes('cancel');
+      const rowParsedDate = (!forceTargetDate && rawDateCell) ? parseDateCell(rawDateCell) : '';
+      const effectiveShipDate = forceTargetDate ? fallbackDate : (rowParsedDate || fallbackDate);
 
       parsedOrders.push({
         id: `ORD-${Date.now()}-${r}`,
-        shipDate: shipDate,
+        shipDate: effectiveShipDate,
         orderId: rawOrder,
         trackingId: rawTrack || cleanTrk,
         cleanTracking: cleanTrk,
@@ -2649,6 +2839,9 @@ ${skuHintList}
     getTodayString,
     adjustDateString,
     formatThaiDateDisplay,
+    normalizeYearToCE,
+    extractDateFromFilename,
+    parseDateCell,
     normalizeTracking,
     normalizeOrderId,
     detectCarrier,

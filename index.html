@@ -1038,14 +1038,15 @@
       </div>
 
       <div class="space-y-3">
-        <div class="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-900">
-          💡 <strong>การทำงาน:</strong> ระบบจะดึง <strong>"ประวัติการยิง QR"</strong> จาก <code>daily-parcel-checker</code> มาเช็คคู่กับไฟล์คำสั่งซื้อที่คุณอัปโหลดในหน้านี้โดยอัตโนมัติ (หรือกดปุ่มดึงรายการคำสั่งซื้อจากระบบยิง QR ด้านล่างก็ได้ครับ)
+        <div class="p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 text-xs text-indigo-900 space-y-1">
+          <div>💡 <strong>การทำงาน:</strong> ระบบจะดึง <strong>"ประวัติการยิง QR"</strong> จาก <code>daily-parcel-checker</code> มาเช็คคู่กับไฟล์คำสั่งซื้อที่คุณอัปโหลดในหน้านี้โดยอัตโนมัติ</div>
+          <div class="text-indigo-700 font-semibold">📅 <strong>จับวันที่อัตโนมัติ (Smart Auto-Date):</strong> อ่านวันที่จากชื่อไฟล์ ชื่อชีต หรือคอลัมน์วันที่ได้อัตโนมัติทั้ง <strong>พ.ศ. และ ค.ศ.</strong> (เช่น <code>3.11.69.xlsx</code>, <code>3.11.2569.xlsx</code>, <code>3.11.26.xlsx</code>, <code>2026-11-03.csv</code>) พร้อมสลับหน้าจอไปวันที่นั้นทันที!</div>
         </div>
 
         <label id="import-orders-dropzone" class="block border-2 border-dashed border-indigo-300 hover:border-indigo-600 rounded-2xl p-6 text-center bg-slate-50 cursor-pointer transition">
           <i data-lucide="file-spreadsheet" class="w-8 h-8 text-indigo-600 mx-auto mb-2"></i>
           <div class="text-sm font-bold text-slate-800">คลิกเลือก หรือลากวางไฟล์ Excel / CSV คำสั่งซื้อ (เลือกพร้อมกันหลายไฟล์ได้)</div>
-          <div class="text-xs text-slate-500 mt-1">รองรับไฟล์จาก Shopee, TikTok Shop, Lazada หรือไฟล์รวมหลายชีต (อ่านครบทุก Sheet อัตโนมัติ)</div>
+          <div class="text-xs text-slate-500 mt-1">รองรับไฟล์ชื่อวันที่ เช่น 3.11.69.xlsx (พ.ศ./ค.ศ.) จาก Shopee, TikTok Shop, Lazada หรือไฟล์รวมหลายชีต</div>
           <input type="file" id="input-import-orders-file" accept=".xlsx,.xls,.csv" multiple class="hidden" />
         </label>
 

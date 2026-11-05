@@ -1419,15 +1419,30 @@
 
       try {
         const allParsedOrders = [];
+        const detectedDatesFromFiles = [];
+
         for (const file of files) {
+          const fileDate = TrackerDB.extractDateFromFilename(file.name);
+          if (fileDate && !detectedDatesFromFiles.includes(fileDate)) {
+            detectedDatesFromFiles.push(fileDate);
+          }
+
           const buf = await file.arrayBuffer();
           const data = new Uint8Array(buf);
           const wb = XLSX.read(data, { type: 'array' });
           for (const sheetName of wb.SheetNames) {
             const ws = wb.Sheets[sheetName];
             if (!ws) continue;
+            const sheetDate = TrackerDB.extractDateFromFilename(sheetName);
+            const effectiveDate = fileDate || sheetDate || state.activeDate;
+            const hasExplicitFileOrSheetDate = Boolean(fileDate || sheetDate);
+
+            if (sheetDate && !detectedDatesFromFiles.includes(sheetDate)) {
+              detectedDatesFromFiles.push(sheetDate);
+            }
+
             const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-            const parsedSheet = TrackerDB.parseOrderRows(rows, state.activeDate);
+            const parsedSheet = TrackerDB.parseOrderRows(rows, effectiveDate, hasExplicitFileOrSheetDate);
             if (parsedSheet.length > 0) {
               allParsedOrders.push(...parsedSheet);
             }
@@ -1439,11 +1454,72 @@
           return;
         }
 
-        state.extraOrders = TrackerDB.deduplicateOrderArray([...state.extraOrders, ...allParsedOrders]);
-        await TrackerDB.saveExtraOrdersToCloud(state.activeDate, state.extraOrders, state.config.staffName);
+        // Group parsed orders by their detected shipDate so multi-day or auto-dated files save to the exact right date
+        const ordersByDate = new Map();
+        for (const ord of allParsedOrders) {
+          const dKey = ord.shipDate || detectedDatesFromFiles[0] || state.activeDate;
+          if (!ordersByDate.has(dKey)) ordersByDate.set(dKey, []);
+          ordersByDate.get(dKey).push(Object.assign({}, ord, { shipDate: dKey }));
+        }
+
+        let switchedToDate = '';
+        for (const [targetDate, dateOrders] of ordersByDate.entries()) {
+          let existingOrdersForDate = [];
+          let existingScansForDate = [];
+
+          if (targetDate === state.activeDate) {
+            existingOrdersForDate = state.extraOrders || [];
+            existingScansForDate = state.labelScans || [];
+          } else {
+            const targetCloud = await TrackerDB.syncDailyDataFromCloud(targetDate);
+            existingOrdersForDate = targetCloud.extraOrders || [];
+            existingScansForDate = targetCloud.labelScans || [];
+          }
+
+          const mergedForDate = TrackerDB.deduplicateOrderArray([...existingOrdersForDate, ...dateOrders]);
+          await TrackerDB.saveExtraOrdersToCloud(targetDate, mergedForDate, state.config.staffName);
+
+          // If user uploaded label photos on current activeDate before importing this auto-dated order file,
+          // and those photos match orders in this file, carry the label photos over to targetDate automatically!
+          if (targetDate !== state.activeDate && Array.isArray(state.labelScans) && state.labelScans.length > 0) {
+            const newTrkSet = new Set(dateOrders.map((o) => TrackerDB.normalizeTracking(o.cleanTracking || o.trackingId || '')).filter(Boolean));
+            const newOrdSet = new Set(dateOrders.map((o) => TrackerDB.normalizeOrderId(o.orderId || '')).filter(Boolean));
+            const hasMatchingPhotosOnCurrentScreen = state.labelScans.some((ls) => {
+              const t = TrackerDB.normalizeTracking(ls.cleanTracking || ls.trackingId || '');
+              const o = TrackerDB.normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
+              return (t && newTrkSet.has(t)) || (o && newOrdSet.has(o));
+            });
+
+            if (hasMatchingPhotosOnCurrentScreen) {
+              const mergedScans = TrackerDB.deduplicateLabelScans([
+                ...existingScansForDate,
+                ...state.labelScans.map((ls) => Object.assign({}, ls, { scanDate: targetDate }))
+              ]);
+              await TrackerDB.saveLabelScansToCloud(targetDate, mergedScans, state.config.staffName);
+            }
+          }
+
+          if (targetDate === state.activeDate) {
+            state.extraOrders = mergedForDate;
+          }
+        }
+
+        // Auto-switch active date picker & dashboard if a date was detected from filename / sheet / date column
+        const primaryTargetDate = detectedDatesFromFiles[0] || Array.from(ordersByDate.keys())[0] || state.activeDate;
+        if (primaryTargetDate && primaryTargetDate !== state.activeDate) {
+          switchedToDate = primaryTargetDate;
+          state.activeDate = primaryTargetDate;
+          if ($('active-date-input')) $('active-date-input').value = primaryTargetDate;
+        }
+
         modal?.classList.add('hidden');
         await refreshActiveDateData(false);
-        showToast(`📂 นำเข้าคำสั่งซื้อสำเร็จ ${allParsedOrders.length.toLocaleString()} รายการ (รวมสะสม ${state.extraOrders.length.toLocaleString()} รายการ)!`);
+
+        if (switchedToDate) {
+          showToast(`📅 ตรวจพบวันที่ ${TrackerDB.formatThaiDateDisplay(switchedToDate)} (${switchedToDate}) จากไฟล์! สลับหน้าจอและนำเข้า ${allParsedOrders.length.toLocaleString()} รายการอัตโนมัติแล้ว`);
+        } else {
+          showToast(`📂 นำเข้าคำสั่งซื้อสำเร็จ ${allParsedOrders.length.toLocaleString()} รายการ (ประจำวันที่ ${TrackerDB.formatThaiDateDisplay(state.activeDate)})!`);
+        }
       } catch (err) {
         alert('อ่านไฟล์ไม่สำเร็จ: ' + err.message);
       }
@@ -2220,12 +2296,20 @@
 
     if (typeof lucide !== 'undefined') lucide.createIcons();
 
+    const getAllSearchableOrders = () => {
+      const globalOrds = state.globalOrderIndex && Array.isArray(state.globalOrderIndex.allOrders)
+        ? state.globalOrderIndex.allOrders
+        : [];
+      return TrackerDB.deduplicateOrderArray([...(state.orders || []), ...globalOrds]);
+    };
+
     const updateLiveOrderCheck = () => {
       const checkBox = $('modal-live-order-check');
       if (!checkBox) return;
       const tVal = TrackerDB.normalizeTracking($('modal-edit-trk')?.value || '');
       const oVal = TrackerDB.normalizeOrderId($('modal-edit-ord')?.value || '');
-      const found = (state.orders || []).find(
+      const allOrds = getAllSearchableOrders();
+      const found = allOrds.find(
         (o) =>
           (tVal && o.cleanTracking === tVal) ||
           (oVal && TrackerDB.normalizeOrderId(o.orderId) === oVal) ||
@@ -2236,7 +2320,7 @@
         checkBox.className = 'p-3 rounded-xl bg-emerald-50 border-2 border-emerald-300 text-emerald-950 text-xs space-y-1';
         checkBox.innerHTML = `
           <div class="font-bold text-emerald-800 flex items-center gap-1.5">
-            <span>✅ พบตรงกับไฟล์คำสั่งซื้อในระบบ! (ยืนยันของแท้ในระบบ)</span>
+            <span>✅ พบตรงกับไฟล์คำสั่งซื้อในระบบ! (ยืนยันของแท้ในระบบ • รอบวันที่ ${escapeHtml(found.shipDate || state.activeDate)})</span>
           </div>
           <div class="text-[11px] text-emerald-900">
             <strong>Tracking:</strong> <span class="font-mono">${escapeHtml(found.cleanTracking || '-')}</span> •
@@ -2273,7 +2357,8 @@
         resultsBox.classList.add('hidden');
         return;
       }
-      const matches = (state.orders || []).filter((o) =>
+      const allOrds = getAllSearchableOrders();
+      const matches = allOrds.filter((o) =>
         (o.cleanTracking && o.cleanTracking.toLowerCase().includes(q)) ||
         (o.orderId && String(o.orderId).toLowerCase().includes(q)) ||
         (o.sku && String(o.sku).toLowerCase().includes(q)) ||
@@ -2290,7 +2375,7 @@
       resultsBox.innerHTML = matches.map((m, idx) => `
         <button type="button" data-pick-idx="${idx}" class="btn-pick-order-match w-full text-left p-2 rounded-lg bg-white hover:bg-indigo-50 border border-indigo-200 transition flex items-center justify-between gap-2 cursor-pointer">
           <div class="truncate">
-            <div class="font-mono font-bold text-slate-900 text-[11px]">TRK: ${escapeHtml(m.cleanTracking || '-')} | ORD: ${escapeHtml(m.orderId || '-')}</div>
+            <div class="font-mono font-bold text-slate-900 text-[11px]">TRK: ${escapeHtml(m.cleanTracking || '-')} | ORD: ${escapeHtml(m.orderId || '-')} <span class="text-indigo-600">(${escapeHtml(m.shipDate || '')})</span></div>
             <div class="text-[10px] text-slate-600 truncate">${escapeHtml(m.sku || '-')} • ${escapeHtml(m.customerName || '')} ${escapeHtml(m.province || '')}</div>
           </div>
           <span class="px-2 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-bold shrink-0">เลือกใช้ออเดอร์นี้</span>
@@ -2333,13 +2418,19 @@
         return;
       }
 
-      // Check if an order in state.orders matches either Tracking ID or Order ID
-      const matchedExistingOrder = (state.orders || []).find(
+      // Check if an order in state.orders or weekly uploaded orders matches either Tracking ID or Order ID
+      const allOrds = getAllSearchableOrders();
+      const matchedExistingOrder = allOrds.find(
         (o) =>
           (newTrk && o.cleanTracking === newTrk) ||
           (newOrd && TrackerDB.normalizeOrderId(o.orderId) === newOrd) ||
           (newOrd && newOrd.length >= 10 && TrackerDB.normalizeOrderId(o.orderId).slice(-8) === newOrd.slice(-8))
       );
+
+      // If matched an order from another date in the week's uploaded files, ensure state.orders includes it for local reconciliation
+      if (matchedExistingOrder && !(state.orders || []).some((o) => o.cleanTracking === matchedExistingOrder.cleanTracking && o.orderId === matchedExistingOrder.orderId)) {
+        state.orders = TrackerDB.deduplicateOrderArray([...(state.orders || []), matchedExistingOrder]);
+      }
 
       const finalTrk = newTrk || (matchedExistingOrder ? matchedExistingOrder.cleanTracking : '');
       const finalOrd = newOrd || (matchedExistingOrder ? TrackerDB.normalizeOrderId(matchedExistingOrder.orderId) : '');
