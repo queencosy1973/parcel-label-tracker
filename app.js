@@ -1422,7 +1422,10 @@
         const detectedDatesFromFiles = [];
 
         for (const file of files) {
+          // Strictly use ONLY the date from the filename (e.g. 5.11.26.xlsx, 3.11.69.xlsx) or activeDate.
+          // Never scatter orders by internal order-date columns or sheet dates!
           const fileDate = TrackerDB.extractDateFromFilename(file.name);
+          const effectiveFileDate = fileDate || state.activeDate;
           if (fileDate && !detectedDatesFromFiles.includes(fileDate)) {
             detectedDatesFromFiles.push(fileDate);
           }
@@ -1433,16 +1436,8 @@
           for (const sheetName of wb.SheetNames) {
             const ws = wb.Sheets[sheetName];
             if (!ws) continue;
-            const sheetDate = TrackerDB.extractDateFromFilename(sheetName);
-            const effectiveDate = fileDate || sheetDate || state.activeDate;
-            const hasExplicitFileOrSheetDate = Boolean(fileDate || sheetDate);
-
-            if (sheetDate && !detectedDatesFromFiles.includes(sheetDate)) {
-              detectedDatesFromFiles.push(sheetDate);
-            }
-
             const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-            const parsedSheet = TrackerDB.parseOrderRows(rows, effectiveDate, hasExplicitFileOrSheetDate);
+            const parsedSheet = TrackerDB.parseOrderRows(rows, effectiveFileDate);
             if (parsedSheet.length > 0) {
               allParsedOrders.push(...parsedSheet);
             }
@@ -2297,10 +2292,7 @@
     if (typeof lucide !== 'undefined') lucide.createIcons();
 
     const getAllSearchableOrders = () => {
-      const globalOrds = state.globalOrderIndex && Array.isArray(state.globalOrderIndex.allOrders)
-        ? state.globalOrderIndex.allOrders
-        : [];
-      return TrackerDB.deduplicateOrderArray([...(state.orders || []), ...globalOrds]);
+      return state.orders || [];
     };
 
     const updateLiveOrderCheck = () => {

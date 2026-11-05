@@ -1596,37 +1596,12 @@ ${skuHintList}
         }
       }
 
+      // Strictly use ONLY orders saved for this targetDate (QC_LABEL_ORDERS_<targetDate>)
+      // so daily order counts match the uploaded daily file 100% without scattering or cross-day mixing.
+      const mergedOrders = deduplicateOrderArray(extraOrders);
+
       // Only include label photos saved for this targetDate
       const cleanLabelScans = deduplicateLabelScans(labelScans);
-
-      // Build same-date orders first; also check if any label photo on targetDate matches an order from another date in the week's uploaded QC_LABEL_ORDERS_*
-      const sameDateOrders = deduplicateOrderArray(extraOrders);
-      const sameDateTrkSet = new Set(sameDateOrders.map((o) => normalizeTracking(o.cleanTracking || o.trackingId || '')).filter(Boolean));
-      const sameDateOrdSet = new Set(sameDateOrders.map((o) => normalizeOrderId(o.orderId || '')).filter(Boolean));
-
-      const crossMatchedOrders = [];
-      const allWeeklyOrders = Array.isArray(crossData.extraOrders) ? crossData.extraOrders : [];
-      if (cleanLabelScans.length > 0 && allWeeklyOrders.length > 0) {
-        cleanLabelScans.forEach((ls) => {
-          const trk = normalizeTracking(ls.cleanTracking || ls.trackingId || '');
-          const ord = normalizeOrderId(ls.cleanOrderId || ls.orderId || '');
-          if ((trk && sameDateTrkSet.has(trk)) || (ord && sameDateOrdSet.has(ord))) return;
-
-          const matchedCross = allWeeklyOrders.filter((co) => {
-            const cTrk = normalizeTracking(co.cleanTracking || co.trackingId || '');
-            const cOrd = normalizeOrderId(co.orderId || '');
-            if (trk && cTrk && trk === cTrk) return true;
-            if (ord && cOrd && ord === cOrd) return true;
-            if (ord && ord.length >= 10 && cOrd && cOrd.length >= 10 && ord.slice(-8) === cOrd.slice(-8)) return true;
-            return false;
-          });
-          if (matchedCross.length > 0) {
-            crossMatchedOrders.push(...matchedCross);
-          }
-        });
-      }
-
-      const mergedOrders = deduplicateOrderArray([...sameDateOrders, ...crossMatchedOrders]);
 
       // Merge same-date QR scans + cross-date QR scans from daily-parcel-checker strictly as a lookup reference
       // (so they match against this system's orders & label photos without adding unrelated rows when orders are deleted)
@@ -1798,9 +1773,9 @@ ${skuHintList}
   // 6. EXCEL / CSV PARSERS (ORDERS & CARRIER FOLLOW-UP STATUS BULK UPDATE)
   // ===========================================================================
 
-  function parseOrderRows(rows, targetDate, forceTargetDate = false) {
+  function parseOrderRows(rows, targetDate) {
     if (!Array.isArray(rows) || rows.length === 0) return [];
-    const fallbackDate = targetDate || getTodayString();
+    const fixedFileDate = targetDate || getTodayString();
 
     // Find header row within first 10 rows
     let headerIdx = 0;
@@ -1836,7 +1811,6 @@ ${skuHintList}
 
     const idxTrack = findCol(['หมายเลขติดตามพัสดุ', 'tracking', 'เลขพัสดุ', 'เลขติดตาม', 'waybill'], ['วัน', 'date', 'เวลา']);
     const idxOrder = findCol(['หมายเลขคำสั่งซื้อ', 'order id', 'รหัสคำสั่งซื้อ', 'order sn', 'order no', 'คำสั่งซื้อ', 'เลขออเดอร์'], ['วัน', 'date', 'status', 'สถานะ', 'tracking']);
-    const idxDate = findCol(['วันที่ส่ง', 'วันที่จัดส่ง', 'วันที่สั่งซื้อ', 'วันที่', 'ship date', 'order date', 'date'], ['tracking', 'order id']);
     const idxSku = findCol(['seller sku', 'เลขอ้างอิง sku', 'รหัสสินค้า', 'sku', 'ชื่อสินค้า', 'product name'], ['quantity', 'จำนวน']);
     const idxVar = findCol(['ชื่อตัวเลือก', 'variation', 'ตัวเลือก', 'สี', 'ขนาด']);
     const idxQty = findCol(['จำนวน', 'quantity', 'qty'], ['คืน', 'ยกเลิก', 'return', 'cancel']);
@@ -1854,7 +1828,6 @@ ${skuHintList}
 
       let rawTrack = idxTrack !== -1 ? String(row[idxTrack] || '').trim() : '';
       let rawOrder = idxOrder !== -1 ? String(row[idxOrder] || '').trim() : '';
-      let rawDateCell = idxDate !== -1 ? row[idxDate] : '';
       let rawSku = idxSku !== -1 ? String(row[idxSku] || '').trim() : '';
       const rawVar = idxVar !== -1 ? String(row[idxVar] || '').trim() : '';
       const rawQty = idxQty !== -1 ? parseInt(row[idxQty], 10) || 1 : 1;
@@ -1898,12 +1871,12 @@ ${skuHintList}
 
       const cleanTrk = normalizeTracking(rawTrack);
       const isCancelled = rawStatus.includes('ยกเลิก') || rawStatus.toLowerCase().includes('cancel');
-      const rowParsedDate = (!forceTargetDate && rawDateCell) ? parseDateCell(rawDateCell) : '';
-      const effectiveShipDate = forceTargetDate ? fallbackDate : (rowParsedDate || fallbackDate);
 
+      // IMPORTANT: Never read order date columns inside the file to scatter rows across days!
+      // All orders in the file strictly belong to fixedFileDate (from filename or activeDate).
       parsedOrders.push({
         id: `ORD-${Date.now()}-${r}`,
-        shipDate: effectiveShipDate,
+        shipDate: fixedFileDate,
         orderId: rawOrder,
         trackingId: rawTrack || cleanTrk,
         cleanTracking: cleanTrk,
