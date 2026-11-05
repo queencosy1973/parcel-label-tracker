@@ -436,13 +436,32 @@
         currentHub: String(raw.currentHub || '').trim(),
         followUpNote: String(raw.followUpNote || '').trim(),
         checkedBy: String(raw.checkedBy || '').trim(),
-        checkedAt: raw.checkedAt || ''
+        checkedAt: raw.checkedAt || '',
+        duplicateCount: parseInt(raw.duplicateCount, 10) || 0,
+        firstScanTime: raw.firstScanTime || raw.scanTime || '',
+        duplicateHistory: Array.isArray(raw.duplicateHistory) ? raw.duplicateHistory : []
       });
 
       if (!mapByKey.has(dedupKey)) {
         mapByKey.set(dedupKey, normalizedItem);
       } else {
         const prev = mapByKey.get(dedupKey);
+        const isDistinctScanId = Boolean(prev.id && normalizedItem.id && prev.id !== normalizedItem.id);
+        const mergedDupCount = isDistinctScanId
+          ? (prev.duplicateCount || 0) + (normalizedItem.duplicateCount || 0) + 1
+          : Math.max(prev.duplicateCount || 0, normalizedItem.duplicateCount || 0);
+        const firstTime = prev.firstScanTime || prev.scanTime || normalizedItem.firstScanTime || normalizedItem.scanTime || '';
+
+        let mergedHistory = Array.isArray(normalizedItem.duplicateHistory) && normalizedItem.duplicateHistory.length > 0
+          ? normalizedItem.duplicateHistory
+          : (Array.isArray(prev.duplicateHistory) ? prev.duplicateHistory : []);
+        if (isDistinctScanId && mergedHistory.length === 0) {
+          mergedHistory = [
+            { time: prev.scanTime || '', sender: prev.senderName || 'ระบบ' },
+            { time: normalizedItem.scanTime || '', sender: normalizedItem.senderName || 'ระบบ' }
+          ];
+        }
+
         const merged = Object.assign({}, prev, normalizedItem, {
           // Keep the latest scan ID if it has a new image, or keep existing if updating metadata
           id: normalizedItem.hasCloudImage || normalizedItem.imageDataUrl ? normalizedItem.id : prev.id,
@@ -468,6 +487,9 @@
           checkedAt: normalizedItem.checkedAt || prev.checkedAt || '',
           hasCloudImage: Boolean(normalizedItem.hasCloudImage || prev.hasCloudImage || normalizedItem.imageDataUrl || prev.imageDataUrl),
           imageDataUrl: normalizedItem.imageDataUrl || prev.imageDataUrl || '',
+          duplicateCount: mergedDupCount,
+          firstScanTime: firstTime,
+          duplicateHistory: mergedHistory,
           updatedAt: normalizedItem.updatedAt || new Date().toISOString()
         });
         mapByKey.set(dedupKey, merged);
@@ -666,6 +688,9 @@
         // Label Photo Scan Details
         labelScanId: labelScan ? labelScan.id : '',
         labelScanTime: labelScan ? (labelScan.scanTime || '') : '',
+        labelFirstScanTime: labelScan ? (labelScan.firstScanTime || labelScan.scanTime || '') : '',
+        labelDuplicateCount: labelScan ? (parseInt(labelScan.duplicateCount, 10) || 0) : 0,
+        labelDuplicateHistory: labelScan && Array.isArray(labelScan.duplicateHistory) ? labelScan.duplicateHistory : [],
         labelSource: labelScan ? (labelScan.sourceChannel || 'WEB') : '',
         labelSender: labelScan ? (labelScan.senderName || '') : '',
         hasCloudImage: labelScan ? Boolean(labelScan.hasCloudImage || labelScan.imageDataUrl) : false,
@@ -715,6 +740,9 @@
 
         labelScanId: ls.id,
         labelScanTime: ls.scanTime || '',
+        labelFirstScanTime: ls.firstScanTime || ls.scanTime || '',
+        labelDuplicateCount: parseInt(ls.duplicateCount, 10) || 0,
+        labelDuplicateHistory: Array.isArray(ls.duplicateHistory) ? ls.duplicateHistory : [],
         labelSource: ls.sourceChannel || 'LINE_GROUP',
         labelSender: ls.senderName || '',
         hasCloudImage: Boolean(ls.hasCloudImage || ls.imageDataUrl),
@@ -764,6 +792,9 @@
 
         labelScanId: '',
         labelScanTime: '',
+        labelFirstScanTime: '',
+        labelDuplicateCount: 0,
+        labelDuplicateHistory: [],
         labelSource: '',
         labelSender: '',
         hasCloudImage: false,
@@ -803,6 +834,8 @@
     let qrOnlyCount = 0;
     let orderPendingCount = 0;
     let unmatchedPhotoCount = 0;
+    let duplicateLabelScansCount = 0;
+    let duplicateLabelItemsCount = 0;
 
     const followUpCounts = {
       PENDING_PICKUP: 0,
@@ -819,7 +852,14 @@
         totalUnits += (parseInt(item.qty, 10) || 1);
       }
       if (item.hasQr) qrScannedCount++;
-      if (item.hasPhoto) labelPhotoCount++;
+      if (item.hasPhoto) {
+        labelPhotoCount++;
+        const dupCnt = parseInt(item.labelDuplicateCount, 10) || 0;
+        if (dupCnt > 0) {
+          duplicateLabelScansCount += dupCnt;
+          duplicateLabelItemsCount++;
+        }
+      }
 
       if (item.threeWayStatus === 'VERIFIED_ALL') verifiedAllCount++;
       else if (item.threeWayStatus === 'PHOTO_ONLY') photoOnlyCount++;
@@ -836,6 +876,7 @@
     });
 
     const issuesToFollowCount = photoOnlyCount + qrOnlyCount + orderPendingCount + unmatchedPhotoCount;
+    const totalRawLabelUploads = labelPhotoCount + duplicateLabelScansCount;
 
     return {
       date: date || getTodayString(),
@@ -846,6 +887,9 @@
         totalUnits,
         qrScannedCount,
         labelPhotoCount,
+        totalRawLabelUploads,
+        duplicateLabelScansCount,
+        duplicateLabelItemsCount,
         verifiedAllCount,
         photoOnlyCount,
         qrOnlyCount,
@@ -1771,7 +1815,7 @@ ${skuHintList}
       }
     }
 
-    // Check if this tracking/order was already photographed on targetDate (Deduplication!)
+    // Check if this tracking/order was already photographed (Deduplication & Duplicate Alerting!)
     const existingScan = targetData.labelScans.find((ls) =>
       (cleanTrk && ls.cleanTracking === cleanTrk) ||
       (cleanOrd && ls.cleanOrderId === cleanOrd)
@@ -1782,11 +1826,27 @@ ${skuHintList}
       : `LBL-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
 
     const nowTime = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(11, 19);
+    const effectiveScanDate = existingScan && existingScan.scanDate ? existingScan.scanDate : targetDate;
+    const prevDupCount = existingScan ? (parseInt(existingScan.duplicateCount, 10) || 0) : 0;
+    const newDupCount = existingScan ? prevDupCount + 1 : 0;
+    const firstScanTime = existingScan ? (existingScan.firstScanTime || existingScan.scanTime || nowTime) : nowTime;
+
+    let duplicateHistory = [];
+    if (existingScan) {
+      const baseHist = Array.isArray(existingScan.duplicateHistory) && existingScan.duplicateHistory.length > 0
+        ? existingScan.duplicateHistory
+        : [{ time: firstScanTime, sender: existingScan.senderName || 'ระบบ', fileName: existingScan.fileName || '' }];
+      duplicateHistory = [...baseHist, { time: nowTime, sender: senderName, fileName: options.fileName || '' }];
+    }
 
     const newScanObj = {
       id: scanId,
-      scanDate: targetDate,
+      scanDate: effectiveScanDate,
       scanTime: nowTime,
+      firstScanTime: firstScanTime,
+      duplicateCount: newDupCount,
+      duplicateHistory: duplicateHistory,
+      fileName: options.fileName || (existingScan ? existingScan.fileName : '') || '',
       trackingId: cleanTrk || (matched.order ? matched.order.trackingId : '') || '',
       cleanTracking: cleanTrk || (matched.order ? normalizeTracking(matched.order.trackingId) : '') || '',
       orderId: extractedData.orderId || (matched.order ? matched.order.orderId : '') || (matched.qrScan ? matched.qrScan.matchedOrderId : '') || '',
@@ -1816,9 +1876,9 @@ ${skuHintList}
       await saveLabelImageToCloud(scanId, imageDataUrl, newScanObj, customUrl, customKey);
     }
 
-    // 3. Deduplicate & Save Label Scans list for targetDate
+    // 3. Deduplicate & Save Label Scans list
     const updatedList = deduplicateLabelScans([...targetData.labelScans, newScanObj]);
-    await saveLabelScansToCloud(targetDate, updatedList, senderName, customUrl, customKey);
+    await saveLabelScansToCloud(effectiveScanDate, updatedList, senderName, customUrl, customKey);
 
     // 4. Determine 3-Way Verification Result for instant LINE Bot reply / UI feedback
     const hasOrder = Boolean(matched.order);
@@ -1830,8 +1890,10 @@ ${skuHintList}
 
     return {
       scan: newScanObj,
-      targetDate,
+      targetDate: effectiveScanDate,
       isUpdatedExisting: Boolean(existingScan),
+      previousScan: existingScan || null,
+      duplicateCount: newDupCount,
       hasOrder,
       hasQr,
       threeWayStatus,

@@ -207,7 +207,7 @@
             <span id="kpi-label-photo" class="text-2xl sm:text-3xl font-extrabold text-indigo-700 font-mono">0</span>
             <span class="text-xs text-indigo-600">พัสดุ</span>
           </div>
-          <div class="mt-1 text-[11px] text-slate-500">จาก LINE Bot + หน้าเว็บ</div>
+          <div id="kpi-label-photo-sub" class="mt-1 text-[11px] text-slate-500">จาก LINE Bot + หน้าเว็บ</div>
         </div>
 
         <!-- Card 4: Verified All 3-Way (100%) -->
@@ -239,6 +239,9 @@
         </div>
       </div>
 
+      <!-- Duplicate Label / Item Alert Banner -->
+      <div id="duplicate-label-alert-banner" class="hidden"></div>
+
       <!-- Filter Bar & Search -->
       <div class="bg-white rounded-2xl p-3.5 border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <!-- Status Filter Pills -->
@@ -260,6 +263,9 @@
           </button>
           <button data-filter="UNMATCHED_PHOTO" class="filter-pill px-3 py-1.5 rounded-xl text-xs font-bold border border-purple-300 bg-purple-50 text-purple-800 transition cursor-pointer">
             ❓ รูปไม่พบในออเดอร์ (<span id="cnt-filter-unmatched">0</span>)
+          </button>
+          <button data-filter="DUPLICATE_PHOTO" class="filter-pill px-3 py-1.5 rounded-xl text-xs font-bold border border-orange-400 bg-orange-50 text-orange-900 transition cursor-pointer">
+            ⚠️ ลาเบลซ้ำ (<span id="cnt-filter-dup-photo">0</span>)
           </button>
         </div>
 
@@ -357,6 +363,9 @@
             <div id="ai-scan-progress-bar" class="h-full bg-indigo-600 transition-all duration-300" style="width: 0%"></div>
           </div>
         </div>
+
+        <!-- Duplicate Upload Warning Box on Tab 2 -->
+        <div id="tab2-duplicate-alert-box" class="hidden mt-4"></div>
       </div>
 
       <!-- Split View: Left = Queue List | Right = Side-by-Side Image & AI Editor -->

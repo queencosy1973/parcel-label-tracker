@@ -377,6 +377,15 @@
     if ($('kpi-total-units')) $('kpi-total-units').textContent = `รวมสินค้า ${s.totalUnits.toLocaleString()} ชิ้น`;
     if ($('kpi-qr-scanned')) $('kpi-qr-scanned').textContent = s.qrScannedCount.toLocaleString();
     if ($('kpi-label-photo')) $('kpi-label-photo').textContent = s.labelPhotoCount.toLocaleString();
+    if ($('kpi-label-photo-sub')) {
+      const dupPhotos = s.duplicateLabelScansCount || 0;
+      const rawPhotos = s.totalRawLabelUploads || s.labelPhotoCount || 0;
+      if (dupPhotos > 0) {
+        $('kpi-label-photo-sub').innerHTML = `<span class="text-orange-700 font-bold">📸 สแกนรวม ${rawPhotos} รูป (⚠️ ซ้ำ ${dupPhotos} รูป)</span>`;
+      } else {
+        $('kpi-label-photo-sub').textContent = 'จาก LINE Bot + หน้าเว็บ (ไม่มีรูปซ้ำ)';
+      }
+    }
     if ($('kpi-verified-all')) $('kpi-verified-all').textContent = s.verifiedAllCount.toLocaleString();
 
     const pct = s.totalOrders > 0 ? Math.round((s.verifiedAllCount / s.totalOrders) * 100) : 0;
@@ -394,6 +403,113 @@
     if ($('cnt-filter-qr-only')) $('cnt-filter-qr-only').textContent = s.qrOnlyCount || 0;
     if ($('cnt-filter-pending')) $('cnt-filter-pending').textContent = s.orderPendingCount || 0;
     if ($('cnt-filter-unmatched')) $('cnt-filter-unmatched').textContent = s.unmatchedPhotoCount || 0;
+    if ($('cnt-filter-dup-photo')) $('cnt-filter-dup-photo').textContent = s.duplicateLabelItemsCount || 0;
+
+    renderDuplicateAlertBanner();
+  }
+
+  function renderDuplicateAlertBanner() {
+    const banner = $('duplicate-label-alert-banner');
+    const tab2Box = $('tab2-duplicate-alert-box');
+    const s = state.reconciled.summary || {};
+    const dupItems = (state.reconciled.items || []).filter((x) => (x.labelDuplicateCount || 0) > 0);
+
+    if (dupItems.length === 0) {
+      if (banner) {
+        banner.classList.add('hidden');
+        banner.innerHTML = '';
+      }
+      if (tab2Box) {
+        tab2Box.classList.add('hidden');
+        tab2Box.innerHTML = '';
+      }
+      return;
+    }
+
+    const totalRaw = s.totalRawLabelUploads || s.labelPhotoCount || 0;
+    const uniqueCount = s.labelPhotoCount || 0;
+    const dupCount = s.duplicateLabelScansCount || dupItems.length;
+
+    const rowsHtml = dupItems
+      .map((item) => {
+        const totalScans = (item.labelDuplicateCount || 1) + 1;
+        const firstT = item.labelFirstScanTime || item.labelScanTime || '-';
+        const latestT = item.labelScanTime || '-';
+        return `
+          <div class="flex flex-wrap items-center justify-between gap-2 bg-white/90 border border-orange-300 rounded-xl px-3 py-2 text-xs">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="px-2 py-0.5 rounded-md bg-orange-600 text-white font-bold text-[11px]">⚠️ สแกนซ้ำ ${totalScans} รอบ</span>
+              <span class="font-mono font-extrabold text-slate-900">${escapeHtml(item.trackingId || '-')}</span>
+              <span class="text-slate-500">Order: <b class="font-mono text-slate-700">${escapeHtml(item.orderId || '-')}</b></span>
+              <span class="text-slate-700 font-semibold truncate max-w-[260px]">${escapeHtml(item.sku || '-')}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-orange-900 bg-orange-100 px-2 py-0.5 rounded font-medium">
+                ครั้งแรก: ${escapeHtml(firstT)} • ล่าสุด: ${escapeHtml(latestT)}
+              </span>
+              <button data-dup-scan="${escapeHtml(item.labelScanId || '')}" class="btn-inspect-dup px-2.5 py-1 rounded-lg bg-orange-700 hover:bg-orange-800 text-white font-bold text-[11px] cursor-pointer transition">
+                ดูรูปใบลาเบลที่ซ้ำ
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const alertHtml = `
+      <div class="bg-orange-50 border-2 border-orange-400 rounded-2xl p-4 shadow-xs">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
+          <div class="flex items-center gap-2">
+            <span class="p-1.5 rounded-xl bg-orange-600 text-white"><i data-lucide="Copy" class="w-4 h-4"></i></span>
+            <div>
+              <div class="font-extrabold text-orange-950 text-xs sm:text-sm">
+                ⚠️ แจ้งเตือนพบใบลาเบลอัปโหลด/สแกนซ้ำ ${dupCount} รูป! (อัปโหลดรวม ${totalRaw} รูป → นับเป็นพัสดุจริง ${uniqueCount} พัสดุ)
+              </div>
+              <div class="text-[11px] text-orange-800">
+                ระบบยุบรวมเลขพัสดุที่ซ้ำให้เป็น 1 รายการอัตโนมัติเพื่อไม่ให้ยอดพัสดุเกินจริง โดยรายการที่ถูกสแกนซ้ำมีดังนี้:
+              </div>
+            </div>
+          </div>
+          <button id="btn-filter-only-duplicates" class="px-3 py-1.5 rounded-xl bg-orange-700 hover:bg-orange-800 text-white font-bold text-xs cursor-pointer transition shadow-xs">
+            🔍 กรองดูเฉพาะรายการซ้ำ (${dupItems.length})
+          </button>
+        </div>
+        <div class="space-y-1.5 max-h-48 overflow-y-auto">
+          ${rowsHtml}
+        </div>
+      </div>
+    `;
+
+    if (banner) {
+      banner.classList.remove('hidden');
+      banner.innerHTML = alertHtml;
+      banner.querySelector('#btn-filter-only-duplicates')?.addEventListener('click', () => {
+        state.dashboardFilter = 'DUPLICATE_PHOTO';
+        document.querySelectorAll('#dashboard-filter-pills .filter-pill').forEach((p) => {
+          if (p.dataset.filter === 'DUPLICATE_PHOTO') p.classList.add('active');
+          else p.classList.remove('active');
+        });
+        renderDashboardTable();
+      });
+      banner.querySelectorAll('.btn-inspect-dup').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const scanId = btn.dataset.dupScan;
+          if (scanId) openPhotoComparisonModal(scanId);
+        });
+      });
+    }
+
+    if (tab2Box) {
+      tab2Box.classList.remove('hidden');
+      tab2Box.innerHTML = alertHtml;
+      tab2Box.querySelector('#btn-filter-only-duplicates')?.classList.add('hidden');
+      tab2Box.querySelectorAll('.btn-inspect-dup').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const scanId = btn.dataset.dupScan;
+          if (scanId) selectScanForInspector(scanId);
+        });
+      });
+    }
   }
 
   function updateDashboardCarrierDropdown() {
@@ -436,7 +552,11 @@
     let list = [...(state.reconciled.items || [])];
 
     if (state.dashboardFilter !== 'ALL') {
-      list = list.filter((x) => x.threeWayStatus === state.dashboardFilter);
+      if (state.dashboardFilter === 'DUPLICATE_PHOTO') {
+        list = list.filter((x) => (x.labelDuplicateCount || 0) > 0);
+      } else {
+        list = list.filter((x) => x.threeWayStatus === state.dashboardFilter);
+      }
     }
     if (state.dashboardCarrier !== 'ALL') {
       list = list.filter((x) => x.carrier === state.dashboardCarrier);
@@ -484,12 +604,18 @@
            </div>`
         : `<span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[11px] font-medium">ยังไม่ยิง QR</span>`;
 
+      const dupBadgeHtml =
+        (item.labelDuplicateCount || 0) > 0
+          ? `<span class="mt-1 px-2 py-0.5 rounded-full bg-orange-600 text-white font-extrabold text-[10px] shadow-xs">⚠️ สแกนซ้ำ ${(item.labelDuplicateCount || 1) + 1} รอบ (ครั้งแรก ${escapeHtml(item.labelFirstScanTime || '-')})</span>`
+          : '';
+
       const photoCol = item.hasPhoto
         ? `<div class="inline-flex flex-col items-center">
              <button data-view-scan="${escapeHtml(item.labelScanId)}" class="btn-view-photo px-2.5 py-0.5 rounded-md bg-indigo-100 hover:bg-indigo-200 text-indigo-800 font-bold text-[11px] flex items-center gap-1 cursor-pointer transition">
                <i data-lucide="image" class="w-3 h-3"></i> ดูรูปใบลาเบล
              </button>
              <span class="text-[10px] text-slate-500 mt-0.5">${escapeHtml(item.labelScanTime || '')} (${item.labelSource === 'LINE_GROUP' ? 'LINE' : 'เว็บ'})</span>
+             ${dupBadgeHtml}
            </div>`
         : `<span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 text-[11px] font-medium">ยังไม่มีรูปลาเบล</span>`;
 
@@ -656,6 +782,7 @@
     const model = cfg.geminiModel || state.config.geminiModel || 'gemini-flash-latest';
 
     let lastCreatedId = '';
+    const duplicateUploads = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -695,8 +822,20 @@
           date: state.activeDate,
           strictDate: true,
           sourceChannel: 'WEB_UPLOAD',
-          senderName: state.config.staffName || 'อัปโหลดผ่านหน้าเว็บ'
+          senderName: state.config.staffName || 'อัปโหลดผ่านหน้าเว็บ',
+          fileName: file.name
         });
+
+        if (saved.isUpdatedExisting) {
+          duplicateUploads.push({
+            fileName: file.name,
+            trackingId: saved.scan.trackingId || saved.scan.orderId || 'ไม่ระบุเลข',
+            sku: saved.scan.sku || '-',
+            firstScanTime: saved.scan.firstScanTime || saved.previousScan?.scanTime || '-',
+            latestScanTime: saved.scan.scanTime || '-',
+            totalScans: (saved.duplicateCount || 1) + 1
+          });
+        }
 
         lastCreatedId = saved.scan.id;
       } catch (err) {
@@ -712,7 +851,24 @@
     if (lastCreatedId) {
       selectScanForInspector(lastCreatedId);
     }
-    showToast(`ประมวลผลรูปใบปะหน้าพัสดุสำเร็จ ${files.length} รูป!`);
+
+    if (duplicateUploads.length > 0) {
+      const uniqueCount = Math.max(0, files.length - duplicateUploads.length);
+      const dupListText = duplicateUploads
+        .map((d, idx) => `${idx + 1}. เลขพัสดุ ${d.trackingId} (${d.fileName}) -> สแกนซ้ำรอบที่ ${d.totalScans} (ครั้งแรกเมื่อ ${d.firstScanTime})`)
+        .join('\n');
+      showToast(`⚠️ พบใบลาเบลซ้ำ ${duplicateUploads.length} รูป! (อัปโหลด ${files.length} รูป นับเป็นพัสดุไม่ซ้ำเพิ่ม ${uniqueCount} รายการ)`, true);
+      alert(
+        `⚠️ แจ้งเตือนพบใบลาเบลซ้ำ ${duplicateUploads.length} รูป!\n` +
+        `----------------------------------------\n` +
+        `อัปโหลดทั้งหมด: ${files.length} รูป\n` +
+        `พบใบลาเบลที่เคยสแกนไปแล้ว: ${duplicateUploads.length} รูป\n\n` +
+        `รายการที่ซ้ำ:\n${dupListText}\n\n` +
+        `💡 ระบบได้ยุบรวมรายการซ้ำเป็น 1 พัสดุให้อัตโนมัติ และแสดงแถบแจ้งเตือน "⚠️ ลาเบลซ้ำ" บนหน้าแดชบอร์ดเรียบร้อยแล้วครับ`
+      );
+    } else {
+      showToast(`ประมวลผลรูปใบปะหน้าพัสดุสำเร็จ ${files.length} รูป (ไม่มีรูปซ้ำ)!`);
+    }
   }
 
   function renderAiQueueTab() {
@@ -748,16 +904,23 @@
       const rec = itemByScanId.get(s.id);
       const status = rec ? rec.threeWayStatus : 'UNMATCHED_PHOTO';
 
+      const dupQueueBadge =
+        (s.duplicateCount || 0) > 0
+          ? `<span class="px-1.5 py-0.5 rounded bg-orange-600 text-white text-[10px] font-extrabold">⚠️ ซ้ำ ${(s.duplicateCount || 1) + 1} รอบ</span>`
+          : '';
+
       html += `
         <div data-scan-id="${escapeHtml(s.id)}" class="queue-item p-3.5 cursor-pointer transition flex items-start justify-between gap-2 ${isSelected ? 'bg-indigo-50 border-l-4 border-l-indigo-600' : 'hover:bg-slate-50'}">
           <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
+            <div class="flex flex-wrap items-center gap-1.5">
               <span class="font-mono font-bold text-xs sm:text-sm text-slate-900">${escapeHtml(s.trackingId || 'รอระบุเลขพัสดุ')}</span>
               <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold">${escapeHtml(s.carrier)}</span>
+              ${dupQueueBadge}
             </div>
             <div class="text-xs text-slate-700 font-medium truncate mt-0.5">${escapeHtml(s.sku || '-')} (x${s.qty || 1})</div>
             <div class="text-[11px] text-slate-400 mt-0.5">
               Order: ${escapeHtml(s.orderId || '-')} • ${escapeHtml(s.scanTime || '')} (${s.sourceChannel === 'LINE_GROUP' ? 'LINE Bot' : 'เว็บ'})
+              ${(s.duplicateCount || 0) > 0 ? `<span class="text-orange-700 font-bold"> • ครั้งแรก: ${escapeHtml(s.firstScanTime || '-')}</span>` : ''}
             </div>
           </div>
           <div class="shrink-0 text-right">
@@ -1458,6 +1621,7 @@
         }
 
         let switchedToDate = '';
+        let duplicateOrderRowsCount = 0;
         for (const [targetDate, dateOrders] of ordersByDate.entries()) {
           let existingOrdersForDate = [];
           let existingScansForDate = [];
@@ -1471,7 +1635,11 @@
             existingScansForDate = targetCloud.labelScans || [];
           }
 
+          const rawCombinedCount = existingOrdersForDate.length + dateOrders.length;
           const mergedForDate = TrackerDB.deduplicateOrderArray([...existingOrdersForDate, ...dateOrders]);
+          if (rawCombinedCount > mergedForDate.length) {
+            duplicateOrderRowsCount += rawCombinedCount - mergedForDate.length;
+          }
           await TrackerDB.saveExtraOrdersToCloud(targetDate, mergedForDate, state.config.staffName);
 
           // If user uploaded label photos on current activeDate before importing this auto-dated order file,
@@ -1510,10 +1678,15 @@
         modal?.classList.add('hidden');
         await refreshActiveDateData(false);
 
+        const dupNotice =
+          duplicateOrderRowsCount > 0
+            ? ` (⚠️ พบรายการซ้ำ/หลายชิ้นในเลขพัสดุเดียวกัน ${duplicateOrderRowsCount} แถว ระบบยุบรวมให้อัตโนมัติแล้ว)`
+            : '';
+
         if (switchedToDate) {
-          showToast(`📅 ตรวจพบวันที่ ${TrackerDB.formatThaiDateDisplay(switchedToDate)} (${switchedToDate}) จากไฟล์! สลับหน้าจอและนำเข้า ${allParsedOrders.length.toLocaleString()} รายการอัตโนมัติแล้ว`);
+          showToast(`📅 ตรวจพบวันที่ ${TrackerDB.formatThaiDateDisplay(switchedToDate)} (${switchedToDate}) จากไฟล์! นำเข้า ${allParsedOrders.length.toLocaleString()} รายการ${dupNotice}`);
         } else {
-          showToast(`📂 นำเข้าคำสั่งซื้อสำเร็จ ${allParsedOrders.length.toLocaleString()} รายการ (ประจำวันที่ ${TrackerDB.formatThaiDateDisplay(state.activeDate)})!`);
+          showToast(`📂 นำเข้าคำสั่งซื้อสำเร็จ ${allParsedOrders.length.toLocaleString()} รายการ (ประจำวันที่ ${TrackerDB.formatThaiDateDisplay(state.activeDate)})${dupNotice}!`);
         }
       } catch (err) {
         alert('อ่านไฟล์ไม่สำเร็จ: ' + err.message);
