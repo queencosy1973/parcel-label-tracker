@@ -279,6 +279,22 @@
 
     $('input-dashboard-search')?.addEventListener('input', (e) => {
       state.dashboardSearch = (e.target.value || '').trim();
+      const clrBtn = $('btn-clear-dashboard-search');
+      if (clrBtn) {
+        if (state.dashboardSearch) clrBtn.classList.remove('hidden');
+        else clrBtn.classList.add('hidden');
+      }
+      renderDashboardTable();
+    });
+
+    $('btn-clear-dashboard-search')?.addEventListener('click', () => {
+      state.dashboardSearch = '';
+      const inp = $('input-dashboard-search');
+      if (inp) {
+        inp.value = '';
+        inp.focus();
+      }
+      $('btn-clear-dashboard-search')?.classList.add('hidden');
       renderDashboardTable();
     });
 
@@ -647,29 +663,88 @@
 
   function renderDashboardTable() {
     const tbody = $('dashboard-table-body');
+    const searchBanner = $('dashboard-search-result-banner');
     if (!tbody) return;
 
-    let list = [...(state.reconciled.items || [])];
+    const allItems = [...(state.reconciled.items || [])];
+    let list = [...allItems];
 
-    if (state.dashboardFilter !== 'ALL') {
-      if (state.dashboardFilter === 'DUPLICATE_PHOTO') {
-        list = list.filter((x) => (x.labelDuplicateCount || 0) > 0);
-      } else {
-        list = list.filter((x) => x.threeWayStatus === state.dashboardFilter);
-      }
-    }
-    if (state.dashboardCarrier !== 'ALL') {
-      list = list.filter((x) => x.carrier === state.dashboardCarrier);
-    }
-    if (state.dashboardSearch) {
-      const q = state.dashboardSearch.toLowerCase();
-      list = list.filter((x) =>
+    // If user is actively searching by Tracking ID / Order ID, search across ALL items regardless of active status filter pill!
+    // (So if they clicked a status pill earlier and then type a Tracking ID, they always find it immediately)
+    const rawSearch = (state.dashboardSearch || '').trim();
+    let searchTokens = [];
+    if (rawSearch) {
+      // Support pasting multiple Tracking IDs / Order IDs separated by spaces, commas, or newlines
+      const splitTokens = rawSearch
+        .split(/[\s,;|\n\r]+/)
+        .map((t) => t.trim().toLowerCase())
+        .filter(Boolean);
+
+      // If all tokens look like Tracking/Order numbers (alphanumeric >= 4 chars), treat as multi-code search;
+      // otherwise also allow full phrase search (e.g. customer name or sofa model with spaces)
+      const isMultiCodeSearch = splitTokens.length > 1 && splitTokens.every((t) => /^[a-z0-9-]{4,}$/i.test(t));
+      searchTokens = isMultiCodeSearch ? splitTokens : [rawSearch.toLowerCase()];
+
+      const matchesItem = (x, q) =>
         (x.trackingId && x.trackingId.toLowerCase().includes(q)) ||
+        (x.cleanTracking && x.cleanTracking.toLowerCase().includes(q)) ||
         (x.orderId && x.orderId.toLowerCase().includes(q)) ||
+        (x.cleanOrderId && x.cleanOrderId.toLowerCase().includes(q)) ||
         (x.sku && x.sku.toLowerCase().includes(q)) ||
         (x.customerName && x.customerName.toLowerCase().includes(q)) ||
-        (x.province && x.province.toLowerCase().includes(q))
-      );
+        (x.province && x.province.toLowerCase().includes(q));
+
+      list = allItems.filter((x) => searchTokens.some((tok) => matchesItem(x, tok)));
+
+      if (searchBanner) {
+        const missingTokens = isMultiCodeSearch
+          ? searchTokens.filter((tok) => !allItems.some((x) => matchesItem(x, tok)))
+          : [];
+        const vCount = list.filter((x) => x.threeWayStatus === 'VERIFIED_ALL').length;
+        const pOnly = list.filter((x) => x.threeWayStatus === 'PHOTO_ONLY').length;
+        const qOnly = list.filter((x) => x.threeWayStatus === 'QR_ONLY').length;
+        const pend = list.filter((x) => x.threeWayStatus === 'ORDER_PENDING').length;
+
+        searchBanner.classList.remove('hidden');
+        searchBanner.innerHTML = `
+          <div class="bg-indigo-50 border-2 border-indigo-300 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="px-2.5 py-1 rounded-lg bg-indigo-600 text-white font-extrabold">
+                🔍 ผลการค้นหา "${escapeHtml(rawSearch)}" : พบ ${list.length} รายการ
+              </span>
+              <span class="text-slate-700 font-semibold">
+                (✅ ครบ 3 ทาง: <b>${vCount}</b> • 📸 มีรูปขาด QR: <b>${pOnly}</b> • 🔫 ยิง QR ขาดรูป: <b>${qOnly}</b> • ⏳ ค้างแพ็ค: <b>${pend}</b>)
+              </span>
+              ${
+                missingTokens.length > 0
+                  ? `<span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300 font-bold">❌ ไม่พบในระบบ ${missingTokens.length} เลข: ${escapeHtml(missingTokens.join(', ').toUpperCase())}</span>`
+                  : ''
+              }
+            </div>
+            <button id="btn-banner-clear-search" class="px-3 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold cursor-pointer transition">
+              ✖ ล้างการค้นหา (กลับไปดูทั้งหมด)
+            </button>
+          </div>
+        `;
+        searchBanner.querySelector('#btn-banner-clear-search')?.addEventListener('click', () => {
+          $('btn-clear-dashboard-search')?.click();
+        });
+      }
+    } else {
+      if (searchBanner) {
+        searchBanner.classList.add('hidden');
+        searchBanner.innerHTML = '';
+      }
+      if (state.dashboardFilter !== 'ALL') {
+        if (state.dashboardFilter === 'DUPLICATE_PHOTO') {
+          list = list.filter((x) => (x.labelDuplicateCount || 0) > 0);
+        } else {
+          list = list.filter((x) => x.threeWayStatus === state.dashboardFilter);
+        }
+      }
+      if (state.dashboardCarrier !== 'ALL') {
+        list = list.filter((x) => x.carrier === state.dashboardCarrier);
+      }
     }
 
     if (list.length === 0) {

@@ -304,6 +304,49 @@ module.exports = async function handler(req, res) {
           ].filter(Boolean);
 
           await replyToLine(replyToken, lineAccessToken, summaryLines.join('\n'));
+        } else if (
+          text.startsWith('ค้นหา') ||
+          text.startsWith('เช็ค ') ||
+          /^[A-Za-z0-9]{8,24}$/.test(text)
+        ) {
+          const queryStr = text.replace(/^(ค้นหา|เช็ค)\s*/i, '').trim().toLowerCase();
+          if (queryStr.length >= 4) {
+            const today = TrackerDB.getTodayString();
+            const daily = await TrackerDB.syncDailyDataFromCloud(today);
+            const matched = (daily.reconciled.items || []).filter((x) =>
+              (x.trackingId && x.trackingId.toLowerCase().includes(queryStr)) ||
+              (x.orderId && x.orderId.toLowerCase().includes(queryStr)) ||
+              (x.customerName && x.customerName.toLowerCase().includes(queryStr))
+            );
+
+            if (matched.length === 0) {
+              await replyToLine(
+                replyToken,
+                lineAccessToken,
+                `🔍 ค้นหา "${queryStr.toUpperCase()}"\n❌ ไม่พบเลขพัสดุหรือคำสั่งซื้อนี้ในระบบปัจจุบันครับ`
+              );
+            } else {
+              const lines = [`🔍 ผลการค้นหา "${queryStr.toUpperCase()}" (พบ ${matched.length} รายการ):`];
+              matched.slice(0, 5).forEach((it, idx) => {
+                const stText =
+                  it.threeWayStatus === 'VERIFIED_ALL'
+                    ? '✅ ครบ 3 ทาง (ยิง QR + มีรูปลาเบล)'
+                    : it.threeWayStatus === 'PHOTO_ONLY'
+                    ? '📸 มีรูปลาเบลแล้ว (⚠️ ยังไม่ยิง QR)'
+                    : it.threeWayStatus === 'QR_ONLY'
+                    ? '🔫 ยิง QR แล้ว (⚠️ ยังไม่มีรูปลาเบล)'
+                    : '⏳ ออเดอร์ค้างแพ็ค (ยังไม่ยิง QR / ยังไม่มีรูป)';
+                lines.push(
+                  `━━━━━━━━━━━━━━`,
+                  `${idx + 1}) Tracking: ${it.trackingId || '-'} (${it.carrier || '-'})`,
+                  `🧾 Order: ${it.orderId || '-'}`,
+                  `🛋 สินค้า: ${it.sku || '-'} (x${it.qty || 1})`,
+                  `📌 สถานะ: ${stText}`
+                );
+              });
+              await replyToLine(replyToken, lineAccessToken, lines.join('\n'));
+            }
+          }
         }
       }
     }
